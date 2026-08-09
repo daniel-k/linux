@@ -540,11 +540,11 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 {
 	struct dev_pm_domain_list *cpr_pd_list = NULL;
 	/*
-	 * PD_FLAG_REQUIRED_OPP makes the OPP core create the CPU's OPP table
-	 * and bind it to the CPRh domain that provides its required-opps.
-	 * It must run while that table is still empty, which is why the CPRh
-	 * corner setup is deferred to qcom_cpr3_cprh_init() below instead of
-	 * happening in the domain's attach_dev callback.
+	 * No PD_FLAG_REQUIRED_OPP: the genpd core already binds the CPU as the
+	 * required-opp consumer of this domain while attaching, because the CPU
+	 * has a single power domain and its operating points name required-opps.
+	 * Asking for it here only repeats that work on a table the core has
+	 * already configured.
 	 *
 	 * PD_FLAG_NO_DEV_LINK because the consumer here is a CPU device, which
 	 * never probes and never runtime suspends, so a device link to the
@@ -555,7 +555,7 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 	struct dev_pm_domain_attach_data attach_data = {
 		.pd_names = cprh_genpd_names,
 		.num_pd_names = 1,
-		.pd_flags = PD_FLAG_NO_DEV_LINK | PD_FLAG_REQUIRED_OPP,
+		.pd_flags = PD_FLAG_NO_DEV_LINK,
 	};
 	struct platform_device *pdev = cpufreq_get_driver_data();
 	const struct qcom_cpufreq_soc_data *soc_data = qcom_cpufreq.soc_data;
