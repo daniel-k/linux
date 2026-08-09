@@ -545,11 +545,17 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 	 * It must run while that table is still empty, which is why the CPRh
 	 * corner setup is deferred to qcom_cpr3_cprh_init() below instead of
 	 * happening in the domain's attach_dev callback.
+	 *
+	 * PD_FLAG_NO_DEV_LINK because the consumer here is a CPU device, which
+	 * never probes and never runtime suspends, so a device link to the
+	 * domain orders nothing.  The default link would runtime resume a
+	 * domain that is already always-on, from a device that has no runtime
+	 * PM of its own.
 	 */
 	struct dev_pm_domain_attach_data attach_data = {
 		.pd_names = cprh_genpd_names,
 		.num_pd_names = 1,
-		.pd_flags = PD_FLAG_DEV_LINK_ON | PD_FLAG_REQUIRED_OPP,
+		.pd_flags = PD_FLAG_NO_DEV_LINK | PD_FLAG_REQUIRED_OPP,
 	};
 	struct platform_device *pdev = cpufreq_get_driver_data();
 	const struct qcom_cpufreq_soc_data *soc_data = qcom_cpufreq.soc_data;
