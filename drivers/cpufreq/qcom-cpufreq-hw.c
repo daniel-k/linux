@@ -1654,7 +1654,9 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 		return -ENODEV;
 	}
 
-	if (readl_relaxed(data->base + qcom_cpufreq.soc_data->reg_dcvs_ctrl) & 0x1)
+	/* Offset zero is not a DCVS control register on every OSM revision */
+	if (qcom_cpufreq.soc_data->reg_dcvs_ctrl &&
+	    readl_relaxed(data->base + qcom_cpufreq.soc_data->reg_dcvs_ctrl) & 0x1)
 		data->per_core_dcvs = true;
 
 	ret = qcom_cpufreq_hw_read_lut(cpu_dev, policy);
