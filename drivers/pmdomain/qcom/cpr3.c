@@ -290,6 +290,35 @@ struct cpr_desc {
 	bool hw_closed_loop_en;
 };
 
+/*
+ * Bring-up instrument, not a feature: programming the CPRh corner table kills
+ * MSM8998 with no console output, and the phases below separate the software
+ * half from the first register write so the last log line names the phase.
+ * Zero touches no hardware at all, which is the known-good control.
+ */
+static int cprh_init_stop;
+module_param(cprh_init_stop, int, 0444);
+MODULE_PARM_DESC(cprh_init_stop,
+		 "stop CPRh setup after phase N (0: no hardware access)");
+
+/**
+ * cprh_stop_after() - Report a finished CPRh setup phase
+ * @dev:   CPR device, for the log line
+ * @tid:   Thread number
+ * @phase: Number of the phase that has just completed
+ * @name:  Short name of that phase
+ *
+ * Returns: True when setup must not go any further.
+ */
+static bool cprh_stop_after(struct device *dev, int tid, int phase,
+			    const char *name)
+{
+	dev_info(dev, "cprh-init: thread %d phase %d ok (%s)\n",
+		 tid, phase, name);
+
+	return phase >= cprh_init_stop;
+}
+
 struct cpr_drv;
 struct cpr_thread {
 	int			num_corners;
@@ -1642,6 +1671,9 @@ static int cpr3_corner_init(struct cpr_thread *thread)
 	/* Reassign extra_corners, as we have to exclude delta_quot for them */
 	extra_corners = drv->extra_corners;
 
+	if (cprh_stop_after(drv->dev, thread->id, 2, "corner-calc"))
+		return -ECANCELED;
+
 	/* Disable the interface between OSM and CPRh */
 	cpr_masked_write(thread, drv->reg_ctl,
 			 CPRH_CTL_OSM_ENABLED, 0);
@@ -1674,6 +1706,9 @@ static int cpr3_corner_init(struct cpr_thread *thread)
 		dev_vdbg(drv->dev, "Programmed min quotient %u for Ring Oscillator %d\n",
 			 tgt_quot_val, tgt_quot_reg);
 	}
+
+	if (cprh_stop_after(drv->dev, thread->id, 3, "cpr-regs"))
+		return -ECANCELED;
 
 	for (i = 0; i < total_corners; i++) {
 		int volt_oloop_steps, volt_floor_steps, delta_quot_steps;
@@ -1742,6 +1777,9 @@ static int cpr3_corner_init(struct cpr_thread *thread)
 			i, volt_oloop_steps, volt_floor_steps,
 			delta_quot_steps);
 	}
+
+	if (cprh_stop_after(drv->dev, thread->id, 4, "cpr-corners"))
+		return -ECANCELED;
 
 	/*
 	 * On CPR-Hardened the corner request comes from the OSM, so the loop
@@ -2513,13 +2551,28 @@ int qcom_cpr3_cprh_init(struct device *virt_dev)
 		return 0;
 	}
 
+	if (cprh_stop_after(drv->dev, thread->id, 0, "attach")) {
+		ret = 0;
+		goto unlock;
+	}
+
 	ret = dev_pm_opp_of_add_table(thread->attached_cpu_dev);
 	if (ret && ret != -EEXIST) {
 		dev_err(drv->dev, "Cannot add table: %d\n", ret);
 		goto unlock;
 	}
 
+	if (cprh_stop_after(drv->dev, thread->id, 1, "opp-table")) {
+		ret = 0;
+		goto unlock;
+	}
+
 	ret = cpr3_corner_init(thread);
+	if (ret == -ECANCELED) {
+		/* Stopped on purpose partway: leave the table, arm nothing */
+		ret = 0;
+		goto unlock;
+	}
 	if (ret) {
 		/*
 		 * The table was installed but never set up and never will
