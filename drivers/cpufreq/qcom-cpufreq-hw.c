@@ -299,6 +299,35 @@ static const char * const cprh_genpd_names[] = { "cprh", NULL };
 static unsigned long cpu_hw_rate, xo_rate;
 static bool icc_scaling_enabled;
 
+/*
+ * Bring-up instrument, not a feature: OSM programming hangs MSM8998 with no
+ * console output, so walk the sequence one hardware effect at a time from the
+ * kernel command line and let the last surviving boot say where it died.
+ * Zero programs nothing, which is the known-good control.
+ */
+static int osm_setup_stop;
+module_param(osm_setup_stop, int, 0444);
+MODULE_PARM_DESC(osm_setup_stop,
+		 "stop OSM programming after step N (0: program nothing)");
+
+/**
+ * qcom_cpufreq_osm_stop_after() - Report a finished OSM setup step
+ * @cpu_dev: CPU device, for the log line
+ * @index:   Frequency domain number
+ * @step:    Number of the step that has just completed
+ * @name:    Short name of that step
+ *
+ * Returns: True when programming must not go any further.
+ */
+static bool qcom_cpufreq_osm_stop_after(struct device *cpu_dev, int index,
+					int step, const char *name)
+{
+	dev_info(cpu_dev, "osm-setup: domain %d step %d ok (%s)\n",
+		 index, step, name);
+
+	return step >= osm_setup_stop;
+}
+
 /**
  * qcom_cpufreq_set_bw() - Set interconnect bandwidth
  * @policy:   CPUFreq policy structure
@@ -810,11 +839,17 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 	if (ret)
 		return ret;
 
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 8, "acd-regs"))
+		return -ECANCELED;
+
 	/* Switch CPUSS clock source to ACD clock */
 	ret = qcom_cpufreq_hw_acd_write_xfer(ddata, acd_base,
 					     aregs->gfmux_cfg_reg, 1);
 	if (ret)
 		return ret;
+
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 9, "acd-gfmux"))
+		return -ECANCELED;
 
 	/* (Set, then) Clear DCVS_SW */
 	ret = qcom_cpufreq_hw_acd_write_xfer(ddata, acd_base,
@@ -842,6 +877,10 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 
 	/* Wait for ACD to stabilize. Same wait as the OSM boot time... */
 	udelay(OSM_BOOT_TIME_US);
+
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 10, "acd-finish"))
+		return -ECANCELED;
+
 	return 0;
 }
 
@@ -905,6 +944,9 @@ static int qcom_cpufreq_hw_write_lut(struct device *cpu_dev,
 		return -EINVAL;
 	}
 
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 1, "cpr-corners"))
+		return -ECANCELED;
+
 	for (i = 0; i < LUT_MAX_ENTRIES; i++) {
 		struct qcom_cpufreq_hw_params *entry;
 		int pos = i * sdata->lut_row_size;
@@ -956,6 +998,9 @@ static int qcom_cpufreq_hw_write_lut(struct device *cpu_dev,
 	/* Sanity check: we *must* have two mem-acc crossovers (four values) */
 	if (acc_idx < SEQ_MEM_ACC_MAX_LEVELS - 1)
 		return -EINVAL;
+
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 2, "lut"))
+		return -ECANCELED;
 
 	/*
 	 * Customized mem-acc corners, if any; in this case, the last corner
@@ -1038,6 +1083,9 @@ static int qcom_cpufreq_hw_write_lut(struct device *cpu_dev,
 	if (ret)
 		return ret;
 	dev_dbg(cpu_dev, "Wrote APM Pair: [%u-%u]\n", apm_vc - 1, apm_vc);
+
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 3, "sequencer"))
+		return -ECANCELED;
 
 	/*
 	 * We succeeded! Dispose of the table that got allocated during
@@ -1499,6 +1547,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	u32 val;
 	int ret;
 
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 0, "nothing"))
+		return -ECANCELED;
+
 	ret = qcom_cpufreq_hw_write_lut(cpu_dev, policy, cpu_count, index);
 	if (ret)
 		return ret;
@@ -1540,6 +1591,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	/* Enable LLM frequency+voltage voting */
 	writel(0, drv_data->base + setup_regs->reg_llm_intf_dcvs_dis);
 
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 4, "dcvs-policy"))
+		return -ECANCELED;
+
 	/* Setup Boost FSM Timers */
 	qcom_cpufreq_hw_boost_setup(drv_data->base + setup_regs->reg_cc_boost_timer,
 				    setup_regs->boost_timer_reg_len);
@@ -1550,6 +1604,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 
 	/* PLL signal timing control for Boost */
 	writel(BOOST_SYNC_DELAY, drv_data->base + setup_regs->reg_boost_sync_delay);
+
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 5, "boost-timers"))
+		return -ECANCELED;
 
 	/* Setup WFx and PC/RET droop unstall */
 	val = FIELD_PREP(DROOP_TIMER1, DROOP_TIMER_NS);
@@ -1574,6 +1631,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	val |= DROOP_CTRL_VAL;
 	writel(val, drv_data->base + setup_regs->reg_droop_ctrl);
 
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 6, "droop-timers"))
+		return -ECANCELED;
+
 	/* Enable CC-Boost, DCVS-Boost, PS-Boost, WFx, PC/RET, DCVS FSM */
 	val = readl(drv_data->base + setup_regs->reg_pdn_fsm_ctrl);
 	val |= CC_BOOST_EN | PS_BOOST_EN | DCVS_BOOST_EN;
@@ -1584,6 +1644,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	val = PLL_OVERRIDE_DROOP_EN;
 	writel(val, drv_data->base + setup_regs->reg_pll_override);
 
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 7, "fsm-enable"))
+		return -ECANCELED;
+
 	/* Initialize the Adaptive Clock Distribution */
 	ret = qcom_cpufreq_hw_acd_init(cpu_dev, policy, index);
 	if (ret)
@@ -1592,6 +1655,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	/* We're ready: enable the OSM and give it time to boot (5uS) */
 	writel(1, drv_data->base + qcom_cpufreq.soc_data->reg_enable);
 	udelay(OSM_BOOT_TIME_US);
+
+	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 11, "osm-enable"))
+		return -ECANCELED;
 
 	/*
 	 * The OSM is now driving a corner request, so the CPRh controller
@@ -1602,6 +1668,8 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 		dev_err(cpu_dev, "Cannot arm the CPRh loop: %d\n", ret);
 		return ret;
 	}
+
+	qcom_cpufreq_osm_stop_after(cpu_dev, index, 12, "cpr-loop");
 
 	return 0;
 }
