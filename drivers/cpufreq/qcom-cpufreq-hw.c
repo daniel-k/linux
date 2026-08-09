@@ -284,6 +284,7 @@ struct qcom_cpufreq_data {
 	struct delayed_work throttle_work;
 	struct cpufreq_policy *policy;
 	struct clk_hw cpu_clk;
+	struct device *cprh_dev;
 
 	bool per_core_dcvs;
 };
@@ -537,6 +538,8 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 	if (!cpr_pd_list || cpr_pd_list->num_pds < 1 ||
 	    IS_ERR_OR_NULL(cpr_pd_list->pd_devs[0]))
 		return -EINVAL;
+
+	data->cprh_dev = cpr_pd_list->pd_devs[0];
 
 	/* Installs and voltage-adjusts the CPU OPP table; see cpr3.c */
 	ret = qcom_cpr3_cprh_init(cpr_pd_list->pd_devs[0]);
@@ -1589,6 +1592,16 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	/* We're ready: enable the OSM and give it time to boot (5uS) */
 	writel(1, drv_data->base + qcom_cpufreq.soc_data->reg_enable);
 	udelay(OSM_BOOT_TIME_US);
+
+	/*
+	 * The OSM is now driving a corner request, so the CPRh controller
+	 * finally has something to follow: hand the supply over to it.
+	 */
+	ret = qcom_cpr3_cprh_enable(drv_data->cprh_dev);
+	if (ret) {
+		dev_err(cpu_dev, "Cannot arm the CPRh loop: %d\n", ret);
+		return ret;
+	}
 
 	return 0;
 }

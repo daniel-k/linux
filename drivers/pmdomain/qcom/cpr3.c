@@ -1281,6 +1281,42 @@ static int cprh_corner_adjust_opps(struct cpr_thread *thread)
 }
 
 /**
+ * cpr3_arm_loop() - Hand the CPR controller over to the hardware
+ * @thread: Structure holding CPR thread-specific parameters
+ *
+ * Start the internal loop and, on CPR-Hardened, open the interface that
+ * lets the OSM drive the corner request.  Everything the controller needs
+ * must already be programmed: from here on it runs on its own.
+ */
+static void cpr3_arm_loop(struct cpr_thread *thread)
+{
+	struct cpr_drv *drv = thread->drv;
+
+	/* Setup is done! Enable the internal loop to start CPR. */
+	cpr_masked_write(thread, CPR3_REG_CPR_CTL,
+			 CPR3_CPR_CTL_LOOP_EN_MASK,
+			 CPR3_CPR_CTL_LOOP_EN_MASK);
+
+	/*
+	 * All the writes are going through before enabling internal
+	 * communication between the OSM and the CPRh controllers
+	 * because we are never using relaxed accessors, but should
+	 * we use them, it would be critical to issue a barrier here,
+	 * otherwise there is a high risk of hardware lockups due to
+	 * under-voltage for the selected CPU clock.
+	 *
+	 * Please note that the CPR-hardened gets set-up in Linux but
+	 * then gets actually used in firmware (and only by the OSM);
+	 * after handing it off we will have no more control on it.
+	 */
+
+	/* Enable the interface between OSM and CPRh */
+	cpr_masked_write(thread, drv->reg_ctl,
+			 CPRH_CTL_OSM_ENABLED,
+			 CPRH_CTL_OSM_ENABLED);
+}
+
+/**
  * cpr3_corner_init() - Calculate and set-up corners for the CPR HW
  * @thread: Structure holding CPR thread-specific parameters
  *
@@ -1707,28 +1743,13 @@ static int cpr3_corner_init(struct cpr_thread *thread)
 			delta_quot_steps);
 	}
 
-	/* YAY! Setup is done! Enable the internal loop to start CPR. */
-	cpr_masked_write(thread, CPR3_REG_CPR_CTL,
-			 CPR3_CPR_CTL_LOOP_EN_MASK,
-			 CPR3_CPR_CTL_LOOP_EN_MASK);
-
 	/*
-	 * All the writes are going through before enabling internal
-	 * communication between the OSM and the CPRh controllers
-	 * because we are never using relaxed accessors, but should
-	 * we use them, it would be critical to issue a barrier here,
-	 * otherwise there is a high risk of hardware lockups due to
-	 * under-voltage for the selected CPU clock.
-	 *
-	 * Please note that the CPR-hardened gets set-up in Linux but
-	 * then gets actually used in firmware (and only by the OSM);
-	 * after handing it off we will have no more control on it.
+	 * On CPR-Hardened the corner request comes from the OSM, so the loop
+	 * cannot be armed here: qcom_cpr3_cprh_enable() does it once the OSM
+	 * is enabled and driving one.
 	 */
-
-	/* Enable the interface between OSM and CPRh */
-	cpr_masked_write(thread, drv->reg_ctl,
-			 CPRH_CTL_OSM_ENABLED,
-			 CPRH_CTL_OSM_ENABLED);
+	if (drv->desc->cpr_type != CTRL_TYPE_CPRH)
+		cpr3_arm_loop(thread);
 
 	/* On success, free cdata manually */
 	devm_kfree(drv->dev, cdata);
@@ -2470,11 +2491,15 @@ unlock:
  */
 int qcom_cpr3_cprh_init(struct device *virt_dev)
 {
-	struct cpr_ext_data *data = dev_get_drvdata(virt_dev);
+	struct cpr_ext_data *data;
 	struct cpr_thread *thread;
 	struct cpr_drv *drv;
 	int ret;
 
+	if (!virt_dev)
+		return -ENODEV;
+
+	data = dev_get_drvdata(virt_dev);
 	if (!data)
 		return -ENODEV;
 
@@ -2513,6 +2538,51 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(qcom_cpr3_cprh_init);
+
+/**
+ * qcom_cpr3_cprh_enable() - Let the CPRh controller follow the OSM
+ * @virt_dev: the genpd virtual device handed out by the "cprh" attach
+ *
+ * Arming the closed loop makes the controller drive the supply from the
+ * corner the OSM asks for, so it can only be done once that OSM is enabled.
+ * Until then the corner table is programmed but inert and the supply stays
+ * wherever the boot firmware left it, which is the only safe state to
+ * unwind from.
+ *
+ * Returns: Zero for success, otherwise negative number on errors.
+ */
+int qcom_cpr3_cprh_enable(struct device *virt_dev)
+{
+	struct cpr_ext_data *data;
+	struct cpr_thread *thread;
+	struct cpr_drv *drv;
+
+	if (!virt_dev)
+		return -ENODEV;
+
+	data = dev_get_drvdata(virt_dev);
+	if (!data)
+		return -ENODEV;
+
+	thread = container_of(data, struct cpr_thread, ext_data);
+	drv = thread->drv;
+
+	mutex_lock(&drv->lock);
+
+	if (!thread->cprh_inited) {
+		mutex_unlock(&drv->lock);
+		dev_err(drv->dev, "thread %d has no corner table\n", thread->id);
+		return -EINVAL;
+	}
+
+	cpr3_arm_loop(thread);
+	dev_info(drv->dev, "thread %d closed loop armed\n", thread->id);
+
+	mutex_unlock(&drv->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_cpr3_cprh_enable);
 
 static int cpr3_debug_info_show(struct seq_file *s, void *unused)
 {

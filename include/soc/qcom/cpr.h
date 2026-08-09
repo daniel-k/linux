@@ -17,5 +17,6 @@ struct cpr_ext_data {
 struct device;
 
 int qcom_cpr3_cprh_init(struct device *genpd_virt_dev);
+int qcom_cpr3_cprh_enable(struct device *genpd_virt_dev);
 
 #endif /* __CPR_H__ */
