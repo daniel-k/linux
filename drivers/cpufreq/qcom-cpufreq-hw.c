@@ -23,7 +23,6 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
-#include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -284,7 +283,6 @@ struct qcom_cpufreq_data {
 	struct delayed_work throttle_work;
 	struct cpufreq_policy *policy;
 	struct clk_hw cpu_clk;
-	struct device *cprh_dev;
 
 	bool per_core_dcvs;
 };
@@ -293,8 +291,6 @@ static struct {
 	struct qcom_cpufreq_data *data;
 	const struct qcom_cpufreq_soc_data *soc_data;
 } qcom_cpufreq;
-
-static const char * const cprh_genpd_names[] = { "cprh", NULL };
 
 static unsigned long cpu_hw_rate, xo_rate;
 static bool icc_scaling_enabled;
@@ -538,25 +534,6 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 				   int *apm_vc, int *acc_vc, int cpu_count,
 				   u8 *num_entries)
 {
-	struct dev_pm_domain_list *cpr_pd_list = NULL;
-	/*
-	 * No PD_FLAG_REQUIRED_OPP: the genpd core already binds the CPU as the
-	 * required-opp consumer of this domain while attaching, because the CPU
-	 * has a single power domain and its operating points name required-opps.
-	 * Asking for it here only repeats that work on a table the core has
-	 * already configured.
-	 *
-	 * PD_FLAG_NO_DEV_LINK because the consumer here is a CPU device, which
-	 * never probes and never runtime suspends, so a device link to the
-	 * domain orders nothing.  The default link would runtime resume a
-	 * domain that is already always-on, from a device that has no runtime
-	 * PM of its own.
-	 */
-	struct dev_pm_domain_attach_data attach_data = {
-		.pd_names = cprh_genpd_names,
-		.num_pd_names = 1,
-		.pd_flags = PD_FLAG_NO_DEV_LINK,
-	};
 	struct platform_device *pdev = cpufreq_get_driver_data();
 	const struct qcom_cpufreq_soc_data *soc_data = qcom_cpufreq.soc_data;
 	struct cpr_ext_data *cpr_data;
@@ -564,48 +541,28 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 	unsigned long rate;
 	int apm_uV, acc_uV, i, gpd_opp_cnt, ret = 0;
 
-	ret = devm_pm_domain_attach_list(cpu_dev, &attach_data, &cpr_pd_list);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "Could not attach to pm_domain: %d\n", ret);
-		return ret;
-	}
-
-	if (!cpr_pd_list || cpr_pd_list->num_pds < 1 ||
-	    IS_ERR_OR_NULL(cpr_pd_list->pd_devs[0]))
-		return -EINVAL;
-
-	data->cprh_dev = cpr_pd_list->pd_devs[0];
-
-	/* Installs and voltage-adjusts the CPU OPP table; see cpr3.c */
-	ret = qcom_cpr3_cprh_init(cpr_pd_list->pd_devs[0]);
-	if (ret) {
-		dev_err(&pdev->dev, "CPRh init failed: %d\n", ret);
-		return ret;
-	}
-
 	/*
-	 * In the CPR3 driver we have assigned data to the genpd newly created
-	 * virtual device: this contains MEMACC and APM thresholds, as passing
-	 * them through OPPs would be an API abuse.
+	 * Installs and voltage-adjusts the CPU OPP table, and hands back the
+	 * MEM-ACC and APM thresholds, as passing those through OPPs would be
+	 * an API abuse.  See cpr3.c.
 	 */
-	cpr_data = dev_get_drvdata(cpr_pd_list->pd_devs[0]);
-	if (!cpr_data) {
-		dev_err(&pdev->dev, "Cannot get CPR data\n");
-		return -ENODATA;
+	cpr_data = qcom_cpr3_cprh_init(cpu_dev);
+	if (IS_ERR(cpr_data)) {
+		ret = PTR_ERR(cpr_data);
+		dev_err_probe(&pdev->dev, ret, "CPRh init failed\n");
+		return ret;
 	}
 
-	/* Get the count of available OPPs coming from the power domain */
+	/* Get the count of available OPPs coming from the CPR controller */
 	gpd_opp_cnt = dev_pm_opp_get_opp_count(cpu_dev);
-	if (gpd_opp_cnt < 2) {
-		ret = gpd_opp_cnt > 0 ? -EINVAL : gpd_opp_cnt;
-		goto detach_gpd;
-	}
+	if (gpd_opp_cnt < 2)
+		return gpd_opp_cnt < 0 ? gpd_opp_cnt : -EINVAL;
 
 	/* If we get no APM voltage, the system is going to be unstable */
 	apm_uV = cpr_data->apm_threshold_uV;
 	if (apm_uV <= 0) {
 		ret = -EINVAL;
-		goto detach_gpd;
+		goto out;
 	}
 
 	/*
@@ -631,7 +588,7 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 				     sizeof(**hw_tbl), GFP_KERNEL);
 	if (!hw_tbl) {
 		ret = -ENOMEM;
-		goto detach_gpd;
+		goto out;
 	}
 
 	for (i = 0, rate = 1000; i <= gpd_opp_cnt ; rate++, i++) {
@@ -654,14 +611,14 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 		np = dev_pm_opp_get_of_node(genpd_opp);
 		if (!np) {
 			ret = -ENOENT;
-			goto detach_gpd;
+			goto out;
 		}
 
 		if (of_property_read_u32(np, "qcom,pll-override",
 					 &entry->override_val)) {
 			ret = -EINVAL;
 			of_node_put(np);
-			goto detach_gpd;
+			goto out;
 		}
 
 		if (of_property_read_u32(np, "qcom,spare-data",
@@ -743,11 +700,11 @@ static int qcom_cpufreq_gen_params(struct device *cpu_dev,
 	if (i < gpd_opp_cnt) {
 		dev_err(&pdev->dev, "Got bad OPP table from power domain.\n");
 		ret = -EINVAL;
-		goto detach_gpd;
+		goto out;
 	}
 	*num_entries = i;
 
-detach_gpd:
+out:
 	return ret;
 }
 
@@ -1669,7 +1626,7 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	 * The OSM is now driving a corner request, so the CPRh controller
 	 * finally has something to follow: hand the supply over to it.
 	 */
-	ret = qcom_cpr3_cprh_enable(drv_data->cprh_dev);
+	ret = qcom_cpr3_cprh_enable(cpu_dev);
 	if (ret) {
 		dev_err(cpu_dev, "Cannot arm the CPRh loop: %d\n", ret);
 		return ret;
