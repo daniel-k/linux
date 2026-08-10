@@ -1615,6 +1615,16 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	if (ret)
 		return ret;
 
+	/*
+	 * Request the lowest performance state before starting the OSM, so
+	 * that it has a corner to converge on the moment it comes up.  Left
+	 * unwritten, the register holds whatever the boot chain put there and
+	 * the OSM has no transition to run: it stays on the alternate source
+	 * it was parked on and every later request is accepted and ignored.
+	 * The first entry is always the safe one, so this needs no CPRh vote.
+	 */
+	writel(0, drv_data->base + qcom_cpufreq.soc_data->reg_perf_state);
+
 	/* We're ready: enable the OSM and give it time to boot (5uS) */
 	writel(1, drv_data->base + qcom_cpufreq.soc_data->reg_enable);
 	udelay(OSM_BOOT_TIME_US);
