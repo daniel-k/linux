@@ -106,7 +106,7 @@
  * @reg_llm_freq_vote_hyst: DCVS-LLM Wait time for frequency inc/decrement
  * @reg_llm_volt_vote_hyst: DCVS-LLM Wait time for voltage inc/decrement
  * @reg_llm_intf_dcvs_dis:  DCVS-LLM en/disable control
- * @reg_seq1:               Sequencer extra register
+ * @reg_seq1:               Sequencer APM threshold Virtual Corner
  * @reg_pdn_fsm_ctrl:       Boost and Droop FSMs en/disable control
  * @reg_cc_boost_timer:     CC-Boost FSM wait first timer register
  * @reg_dcvs_boost_timer:   DCVS-Boost FSM wait first timer register
@@ -1024,11 +1024,18 @@ static int qcom_cpufreq_hw_write_lut(struct device *cpu_dev,
 		apm_vc = LUT_MAX_ENTRIES - 1;
 
 	/*
+	 * On MSM8998v2 the APM threshold corner is taken from a sequencer
+	 * register that lives in the non-secure page instead of from the
+	 * TrustZone owned SEQ_REG(1), so it holds the same value as the
+	 * SEQ_APM_THRESH_VC slot programmed below.
+	 */
+	writel(apm_vc, ddata->base + sregs->reg_seq1);
+
+	/*
 	 * APM crossover virtual corner refers to CPRh: there, the APM corner
 	 * is always appended to the table (so, at the end of it, right after
 	 * the cluster dvfs entries).
 	 */
-	writel(num_entries, ddata->base + sregs->reg_seq1);
 	ret = qcom_scm_io_writel(SEQUENCER_REG(seq_addr, SEQ_APM_CROSSOVER_VC), num_entries);
 	if (ret)
 		return ret;
