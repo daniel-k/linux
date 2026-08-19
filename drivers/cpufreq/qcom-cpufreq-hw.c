@@ -1604,10 +1604,15 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	if (qcom_cpufreq_osm_stop_after(cpu_dev, index, 6, "droop-timers"))
 		return -ECANCELED;
 
-	/* Enable CC-Boost, DCVS-Boost, PS-Boost, WFx, PC/RET, DCVS FSM */
+	/*
+	 * Enable CC-Boost, DCVS-Boost and PS-Boost, matching the downstream
+	 * kernel: the wahoo DT sets only qcom,{boost,safe,ps}-fsm-en, so the
+	 * vendor never enables the WFx, PC/RET-exit and DCVS droop FSMs on
+	 * msm8998.  Those three gate DCVS work on stall/release signals this
+	 * platform does not deliver.
+	 */
 	val = readl(drv_data->base + setup_regs->reg_pdn_fsm_ctrl);
 	val |= CC_BOOST_EN | PS_BOOST_EN | DCVS_BOOST_EN;
-	val |= WFX_DROOP_EN | PC_RET_EXIT_DROOP_EN | DCVS_DROOP_EN;
 	writel(val, drv_data->base + setup_regs->reg_pdn_fsm_ctrl);
 
 	/* Enable PLL Droop Override */
