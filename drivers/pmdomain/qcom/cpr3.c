@@ -297,7 +297,8 @@ struct cpr_desc {
  * half from the first register write so the last log line names the phase.
  * Zero touches no hardware at all, which is the known-good control.
  */
-static int cprh_init_stop;
+/* Default 5 = all phases: cpufreq works since the SAW4 AVS fix. */
+static int cprh_init_stop = 5;
 module_param(cprh_init_stop, int, 0444);
 MODULE_PARM_DESC(cprh_init_stop,
 		 "stop CPRh setup after phase N (0: no hardware access)");

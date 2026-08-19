@@ -301,7 +301,8 @@ static bool icc_scaling_enabled;
  * kernel command line and let the last surviving boot say where it died.
  * Zero programs nothing, which is the known-good control.
  */
-static int osm_setup_stop;
+/* Default 12 = all steps: cpufreq works since the SAW4 AVS fix. */
+static int osm_setup_stop = 12;
 module_param(osm_setup_stop, int, 0444);
 MODULE_PARM_DESC(osm_setup_stop,
 		 "stop OSM programming after step N (0: program nothing)");
