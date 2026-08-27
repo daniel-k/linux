@@ -714,12 +714,39 @@ static inline u32 qcom_cpufreq_acd_regbit(u8 acd_reg_offset)
 	return BIT(acd_reg_offset / 4);
 }
 
-static int qcom_cpufreq_hw_acd_write_autoxfer(struct qcom_cpufreq_data *data,
+/*
+ * The ACD status polls must not sleep.  poll_timeout_us() evaluates the expiry
+ * before the read and reads once more after it, so a sleeping poll's real
+ * budget is one usleep_range() wakeup -- tens of microseconds, and a different
+ * number on every boot.  Against the 3us nominal budget this code used to
+ * carry, that made domain 1 fail acd-regs with -ETIMEDOUT on roughly 4% of
+ * boots: policy4 never appeared and the big cluster stayed on whatever clock
+ * the boot chain had parked it at.  Domain 0 never failed, because the CPU
+ * running this code is in it.  Busy-poll instead, the way the downstream
+ * driver does, so the budget is the number written here and nothing else.
+ */
+#define ACD_XFER_TIMEOUT_US		1000
+
+static int qcom_cpufreq_hw_acd_poll(struct device *cpu_dev, void __iomem *sts,
+				    u32 mask, const char *what)
+{
+	ktime_t start = ktime_get();
+	u32 regval;
+	int ret;
+
+	ret = readl_poll_timeout_atomic(sts, regval, regval & mask, 1,
+					ACD_XFER_TIMEOUT_US);
+	dev_info(cpu_dev, "acd %s: %lld ns, sts 0x%08x, ret %d\n", what,
+		 ktime_to_ns(ktime_sub(ktime_get(), start)), regval, ret);
+
+	return ret;
+}
+
+static int qcom_cpufreq_hw_acd_write_autoxfer(struct device *cpu_dev,
 					      void __iomem *acd_base, u32 val)
 {
 	const struct qcom_cpufreq_soc_data *sdata = qcom_cpufreq.soc_data;
 	const struct qcom_cpufreq_soc_acd_data *aregs = &sdata->acd_data;
-	u32 regval = 0;
 
 	writel(val, acd_base + aregs->auto_xfer_cfg_reg);
 
@@ -728,11 +755,12 @@ static int qcom_cpufreq_hw_acd_write_autoxfer(struct qcom_cpufreq_data *data,
 	writel(1, acd_base + aregs->auto_xfer_reg);
 
 	/* Poll for status: if the first bit is set the transfer is done. */
-	return readl_poll_timeout(acd_base + aregs->auto_xfer_sts_reg, regval,
-				  regval & BIT(0), 1, 3);
+	return qcom_cpufreq_hw_acd_poll(cpu_dev,
+					acd_base + aregs->auto_xfer_sts_reg,
+					BIT(0), "autoxfer");
 }
 
-static int qcom_cpufreq_hw_acd_write_xfer(struct qcom_cpufreq_data *data,
+static int qcom_cpufreq_hw_acd_write_xfer(struct device *cpu_dev,
 					  void __iomem *acd_base, u8 reg,
 					  u32 val)
 {
@@ -751,8 +779,9 @@ static int qcom_cpufreq_hw_acd_write_xfer(struct qcom_cpufreq_data *data,
 	writel(regval, acd_base + aregs->write_ctl_reg);
 
 	/* Wait until ACD Local Transfer is done */
-	return readl_poll_timeout(acd_base + aregs->write_sts_reg, regval,
-				  regval & qcom_cpufreq_acd_regbit(reg), 1, 3);
+	return qcom_cpufreq_hw_acd_poll(cpu_dev,
+					acd_base + aregs->write_sts_reg,
+					qcom_cpufreq_acd_regbit(reg), "xfer");
 }
 
 /**
@@ -773,7 +802,6 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 				    int index)
 {
 	struct platform_device *pdev = cpufreq_get_driver_data();
-	struct qcom_cpufreq_data *ddata = policy->driver_data;
 	const struct qcom_cpufreq_soc_data *sdata = qcom_cpufreq.soc_data;
 	const struct qcom_cpufreq_soc_acd_data *aregs = &sdata->acd_data;
 	char acd_resname[] = "osm-acdX";
@@ -799,7 +827,7 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 		qcom_cpufreq_acd_regbit(aregs->tl_delay_reg) |
 		qcom_cpufreq_acd_regbit(aregs->softstart_reg) |
 		qcom_cpufreq_acd_regbit(aregs->ext_intf_reg);
-	ret = qcom_cpufreq_hw_acd_write_autoxfer(ddata, acd_base, rmask);
+	ret = qcom_cpufreq_hw_acd_write_autoxfer(cpu_dev, acd_base, rmask);
 	if (ret)
 		return ret;
 
@@ -807,7 +835,7 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 		return -ECANCELED;
 
 	/* Switch CPUSS clock source to ACD clock */
-	ret = qcom_cpufreq_hw_acd_write_xfer(ddata, acd_base,
+	ret = qcom_cpufreq_hw_acd_write_xfer(cpu_dev, acd_base,
 					     aregs->gfmux_cfg_reg, 1);
 	if (ret)
 		return ret;
@@ -816,11 +844,11 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 		return -ECANCELED;
 
 	/* (Set, then) Clear DCVS_SW */
-	ret = qcom_cpufreq_hw_acd_write_xfer(ddata, acd_base,
+	ret = qcom_cpufreq_hw_acd_write_xfer(cpu_dev, acd_base,
 					     aregs->dcvs_sw_reg, 1);
 	if (ret)
 		return ret;
-	ret = qcom_cpufreq_hw_acd_write_xfer(ddata, acd_base,
+	ret = qcom_cpufreq_hw_acd_write_xfer(cpu_dev, acd_base,
 					     aregs->dcvs_sw_reg, 0);
 	if (ret)
 		return ret;
@@ -829,7 +857,7 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 	udelay(1);
 
 	/* Program the final ACD external interface */
-	ret = qcom_cpufreq_hw_acd_write_xfer(ddata, acd_base,
+	ret = qcom_cpufreq_hw_acd_write_xfer(cpu_dev, acd_base,
 					     aregs->ext_intf_reg,
 					     aregs->ext_intf1_val);
 	if (ret)
