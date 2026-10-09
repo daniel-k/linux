@@ -1515,6 +1515,7 @@ static const struct qcom_icc_desc sdm660_a2noc = {
 	.intf_clocks = a2noc_intf_clocks,
 	.num_intf_clocks = ARRAY_SIZE(a2noc_intf_clocks),
 	.regmap_cfg = &sdm660_a2noc_regmap_config,
+	.keep_alive = true,
 };
 
 static struct qcom_icc_node * const sdm660_bimc_nodes[] = {
@@ -1543,6 +1544,7 @@ static const struct qcom_icc_desc sdm660_bimc = {
 	.bus_clk_desc = &bimc_clk,
 	.regmap_cfg = &sdm660_bimc_regmap_config,
 	.ab_coeff = 153,
+	.keep_alive = true,
 };
 
 static struct qcom_icc_node * const sdm660_cnoc_nodes[] = {
@@ -1598,6 +1600,7 @@ static const struct qcom_icc_desc sdm660_cnoc = {
 	.num_nodes = ARRAY_SIZE(sdm660_cnoc_nodes),
 	.bus_clk_desc = &bus_2_clk,
 	.regmap_cfg = &sdm660_cnoc_regmap_config,
+	.keep_alive = true,
 };
 
 static struct qcom_icc_node * const sdm660_gnoc_nodes[] = {
@@ -1663,6 +1666,7 @@ static const struct qcom_icc_desc sdm660_mnoc = {
 	.num_intf_clocks = ARRAY_SIZE(mm_intf_clocks),
 	.regmap_cfg = &sdm660_mnoc_regmap_config,
 	.ab_coeff = 153,
+	.keep_alive = true,
 };
 
 static struct qcom_icc_node * const sdm660_snoc_nodes[] = {
@@ -1699,6 +1703,7 @@ static const struct qcom_icc_desc sdm660_snoc = {
 	.num_nodes = ARRAY_SIZE(sdm660_snoc_nodes),
 	.bus_clk_desc = &bus_1_clk,
 	.regmap_cfg = &sdm660_snoc_regmap_config,
+	.keep_alive = true,
 };
 
 static const struct of_device_id sdm660_noc_of_match[] = {
@@ -1718,6 +1723,7 @@ static struct platform_driver sdm660_noc_driver = {
 	.driver = {
 		.name = "qnoc-sdm660",
 		.of_match_table = sdm660_noc_of_match,
+		.sync_state = icc_sync_state,
 	},
 };
 module_platform_driver(sdm660_noc_driver);
