@@ -436,6 +436,14 @@ static bool cpu_system_power_down_ok(struct dev_pm_domain *pd)
 		return true;
 	}
 
+	/*
+	 * No hrtimer can wake the domain during system-wide suspend: in
+	 * s2idle the tick is frozen and timekeeping is suspended. Do not leave
+	 * the value from the last runtime idle period for consumers of
+	 * ->next_hrtimer, which would program it as a wakeup.
+	 */
+	genpd->gd->next_hrtimer = KTIME_MAX;
+
 	/* Find the deepest state for the latency constraint. */
 	while (state_idx >= 0) {
 		s64 latency_ns = genpd->states[state_idx].power_off_latency_ns +
