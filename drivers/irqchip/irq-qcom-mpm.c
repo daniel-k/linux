@@ -11,7 +11,9 @@
 #include <linux/io.h>
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
+#include <linux/ktime.h>
 #include <linux/mailbox_client.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -21,6 +23,9 @@
 #include <linux/slab.h>
 #include <linux/soc/qcom/irq.h>
 #include <linux/spinlock.h>
+
+#include <asm/arch_timer.h>
+#include <clocksource/arm_arch_timer.h>
 
 /*
  * This is the driver for Qualcomm MPM (MSM Power Manager) interrupt controller,
@@ -61,6 +66,8 @@
  *
  *    n = DIV_ROUND_UP(pin_cnt, 32)
  *
+ * TIMER1:TIMER0 is the absolute arch counter value at which RPM wakes the AP
+ * when the SoC sleeps through the AP's next timer event; ~0 means never.
  */
 
 #define MPM_REG_ENABLE		0
@@ -292,11 +299,57 @@ static irqreturn_t qcom_mpm_handler(int irq, void *dev_id)
 	return ret;
 }
 
+/*
+ * The earliest hrtimer expiry of the CPUs below the MPM domain. Its children
+ * are PSCI CPU domains whose governor stores that value in ->gd->next_hrtimer
+ * right before they power off (cpu_power_down_ok()). For system-wide suspend
+ * it reports KTIME_MAX (cpu_system_power_down_ok()): timekeeping is frozen
+ * then, so there is no timer to wake up for.
+ */
+static ktime_t mpm_pd_next_hrtimer(struct generic_pm_domain *genpd)
+{
+	ktime_t wakeup = KTIME_MAX;
+	struct gpd_link *link;
+
+	list_for_each_entry(link, &genpd->parent_links, parent_node) {
+		struct generic_pm_domain *child = link->child;
+
+		if (child->gd && ktime_before(child->gd->next_hrtimer, wakeup))
+			wakeup = child->gd->next_hrtimer;
+	}
+
+	return wakeup;
+}
+
+/*
+ * Without this RPM can only wake the AP from SoC sleep through an MPM pin:
+ * the arch timer does not run while the SoC sleeps.
+ */
+static void mpm_write_next_wakeup(struct qcom_mpm_priv *priv, ktime_t wakeup)
+{
+	u64 cycles = U64_MAX;
+	s64 delta_ns;
+
+	if (wakeup != KTIME_MAX) {
+		delta_ns = ktime_to_ns(ktime_sub(wakeup, ktime_get()));
+		cycles = arch_timer_read_counter();
+		if (delta_ns > 0)
+			cycles += mul_u64_u32_div(delta_ns,
+						  arch_timer_get_cntfrq(),
+						  NSEC_PER_SEC);
+	}
+
+	writel_relaxed(lower_32_bits(cycles), priv->base);
+	writel_relaxed(upper_32_bits(cycles), priv->base + 4);
+}
+
 static int mpm_pd_power_off(struct generic_pm_domain *genpd)
 {
 	struct qcom_mpm_priv *priv = container_of(genpd, struct qcom_mpm_priv,
 						  genpd);
 	int i, ret;
+
+	mpm_write_next_wakeup(priv, mpm_pd_next_hrtimer(genpd));
 
 	for (i = 0; i < priv->reg_stride; i++)
 		qcom_mpm_write(priv, MPM_REG_STATUS, i, 0);
@@ -327,7 +380,7 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 	struct device_node *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	struct irq_domain *parent_domain;
-	struct generic_pm_domain *genpd;
+	struct generic_pm_domain *genpd = NULL;
 	struct device_node *msgram_np;
 	struct qcom_mpm_priv *priv;
 	unsigned int pin_cnt;
@@ -415,26 +468,10 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 	if (irq < 0)
 		return irq;
 
-	genpd = &priv->genpd;
-	genpd->flags = GENPD_FLAG_IRQ_SAFE;
-	genpd->power_off = mpm_pd_power_off;
-
-	genpd->name = devm_kasprintf(dev, GFP_KERNEL, "%s", dev_name(dev));
-	if (!genpd->name)
-		return -ENOMEM;
-
-	ret = pm_genpd_init(genpd, NULL, false);
-	if (ret) {
-		dev_err(dev, "failed to init genpd: %d\n", ret);
-		return ret;
-	}
-
-	ret = of_genpd_add_provider_simple(np, genpd);
-	if (ret) {
-		dev_err(dev, "failed to add genpd provider: %d\n", ret);
-		goto remove_genpd;
-	}
-
+	/*
+	 * Get the channel first: the genpd provider must not be registered
+	 * when this defers, or the next probe could not add it again.
+	 */
 	priv->mbox_client.dev = dev;
 	priv->mbox_client.knows_txdone = true;
 	priv->mbox_chan = mbox_request_channel(&priv->mbox_client, 0);
@@ -444,11 +481,43 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 		return ret;
 	}
 
+	/*
+	 * The MPM is the parent of the topmost CPU power domain: genpd powers
+	 * it off, and so notifies RPM, only when that domain enters its idle
+	 * state. Without "#power-domain-cells" nothing can make it the parent
+	 * of a domain, and an unused genpd would be powered off (and RPM
+	 * notified) at boot, so skip it and act as a wakeup irqchip only.
+	 */
+	if (of_property_present(np, "#power-domain-cells")) {
+		genpd = &priv->genpd;
+		genpd->flags = GENPD_FLAG_IRQ_SAFE;
+		genpd->power_off = mpm_pd_power_off;
+
+		genpd->name = devm_kasprintf(dev, GFP_KERNEL, "%s",
+					     dev_name(dev));
+		if (!genpd->name) {
+			ret = -ENOMEM;
+			goto free_mbox;
+		}
+
+		ret = pm_genpd_init(genpd, NULL, false);
+		if (ret) {
+			dev_err(dev, "failed to init genpd: %d\n", ret);
+			goto free_mbox;
+		}
+
+		ret = of_genpd_add_provider_simple(np, genpd);
+		if (ret) {
+			dev_err(dev, "failed to add genpd provider: %d\n", ret);
+			goto remove_genpd;
+		}
+	}
+
 	parent_domain = irq_find_host(parent);
 	if (!parent_domain) {
 		dev_err(dev, "failed to find MPM parent domain\n");
 		ret = -ENXIO;
-		goto free_mbox;
+		goto del_provider;
 	}
 
 	priv->domain = irq_domain_create_hierarchy(parent_domain,
@@ -457,7 +526,7 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 	if (!priv->domain) {
 		dev_err(dev, "failed to create MPM domain\n");
 		ret = -ENOMEM;
-		goto free_mbox;
+		goto del_provider;
 	}
 
 	irq_domain_update_bus_token(priv->domain, DOMAIN_BUS_WAKEUP);
@@ -473,10 +542,14 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 
 remove_domain:
 	irq_domain_remove(priv->domain);
+del_provider:
+	if (genpd)
+		of_genpd_del_provider(np);
+remove_genpd:
+	if (genpd)
+		pm_genpd_remove(genpd);
 free_mbox:
 	mbox_free_channel(priv->mbox_chan);
-remove_genpd:
-	pm_genpd_remove(genpd);
 	return ret;
 }
 
