@@ -249,6 +249,9 @@ struct qcom_cpufreq_hw_params {
  * @clk_hw_div:            Divider for "alternate" OSM clock-source
  * @uses_tz:               OSM already set-up and protected by TrustZone
  * @setup_regs:            Register offsets for OSM setup
+ * @pdn_fsm_en:            Boost and droop FSMs to enable in PDN_FSM_CTRL
+ * @cc_zero_behav:         CC_ZERO_BEHAV_CTRL value (cluster power collapse
+ *                         frequency index override)
  */
 struct qcom_cpufreq_soc_data {
 	u32 reg_enable;
@@ -265,6 +268,8 @@ struct qcom_cpufreq_soc_data {
 	u8 lut_row_size;
 	u8 clk_hw_div;
 	bool uses_tz;
+	u32 pdn_fsm_en;
+	u32 cc_zero_behav;
 	const struct qcom_cpufreq_soc_setup_data setup_regs;
 	const struct qcom_cpufreq_soc_acd_data acd_data;
 };
@@ -811,11 +816,15 @@ static int qcom_cpufreq_hw_acd_init(struct device *cpu_dev,
 
 	snprintf(acd_resname, sizeof(acd_resname), "osm-acd%d", index);
 
-	acd_base = devm_platform_ioremap_resource_byname(pdev, acd_resname);
-	if (IS_ERR(acd_base)) {
+	/* ACD is optional (SDM630/660 have none): no region, nothing to do */
+	if (!platform_get_resource_byname(pdev, IORESOURCE_MEM, acd_resname)) {
 		dev_vdbg(cpu_dev, "Skipping ACD initialization.\n");
 		return 0;
 	}
+
+	acd_base = devm_platform_ioremap_resource_byname(pdev, acd_resname);
+	if (IS_ERR(acd_base))
+		return PTR_ERR(acd_base);
 
 	writel(aregs->tl_delay_val, acd_base + aregs->tl_delay_reg);
 	writel(aregs->acd_ctrl_val, acd_base + aregs->acd_ctrl_reg);
@@ -1053,10 +1062,11 @@ static int qcom_cpufreq_hw_write_lut(struct device *cpu_dev,
 		apm_vc = LUT_MAX_ENTRIES - 1;
 
 	/*
-	 * On MSM8998v2 the APM threshold corner is taken from a sequencer
-	 * register that lives in the non-secure page instead of from the
-	 * TrustZone owned SEQ_REG(1), so it holds the same value as the
-	 * SEQ_APM_THRESH_VC slot programmed below.
+	 * On MSM8998v2 (and on SDM630/660, whose vendor clk-cpu-osm.c writes
+	 * SEQ_REG1_OFFSET 0x1048 too) the APM threshold corner is taken from
+	 * a sequencer register that lives in the non-secure page instead of
+	 * from the TrustZone owned SEQ_REG(1), so it holds the same value as
+	 * the SEQ_APM_THRESH_VC slot programmed below.
 	 */
 	writel(apm_vc, ddata->base + sregs->reg_seq1);
 
@@ -1343,6 +1353,9 @@ static const struct qcom_cpufreq_soc_data msm8998_soc_data = {
 	.lut_row_size = 32,
 	.clk_hw_div = 1,
 	.uses_tz = false,
+	.pdn_fsm_en = CC_BOOST_EN | PS_BOOST_EN | DCVS_BOOST_EN,
+	/* Frequency index 0 and override for cluster power collapse */
+	.cc_zero_behav = BIT(0),
 	.setup_regs = {
 		/* Physical offset for sequencer scm calls */
 		.reg_osm_sequencer = 0x300,
@@ -1396,6 +1409,57 @@ static const struct qcom_cpufreq_soc_data msm8998_soc_data = {
 	.lut_max_entries = LUT_MAX_ENTRIES,
 };
 
+/*
+ * SDM630/SDM660: same OSM register layout as MSM8998 (vendor clk-cpu-osm.c),
+ * no ACD.  Tunables follow the vendor DT (qcom,clk-cpu-osm): all six FSMs
+ * enabled and no qcom,pc-override-index, so CC_ZERO_BEHAV_CTRL stays 0.
+ */
+static const struct qcom_cpufreq_soc_data sdm660_soc_data = {
+	.reg_enable = 0x4,
+	.reg_index = 0x150,
+	.reg_freq_lut = 0x154,
+	.reg_freq_lut_src_mask = LUT_SRC_8998,
+	.reg_volt_lut = 0x158,
+	.reg_perf_state = 0xf10,
+	.lut_row_size = 32,
+	.clk_hw_div = 1,
+	.uses_tz = false,
+	.pdn_fsm_en = CC_BOOST_EN | PS_BOOST_EN | DCVS_BOOST_EN |
+		      WFX_DROOP_EN | PC_RET_EXIT_DROOP_EN | DCVS_DROOP_EN,
+	.cc_zero_behav = 0,
+	.setup_regs = {
+		/* Physical offset for sequencer scm calls */
+		.reg_osm_sequencer = 0x300,
+
+		/* Frequency domain offsets */
+		.reg_override = 0x15c,
+		.reg_spare = 0x164,
+		.reg_cc_zero_behav = 0x0c,
+		.reg_spm_cc_hyst = 0x1c,
+		.reg_spm_cc_dcvs_dis = 0x20,
+		.reg_spm_core_ret_map = 0x24,
+		.reg_llm_freq_vote_hyst = 0x2c,
+		.reg_llm_volt_vote_hyst = 0x30,
+		.reg_llm_intf_dcvs_dis = 0x34,
+		.reg_seq1 = 0x48,
+		.reg_pdn_fsm_ctrl = 0x70,
+		.reg_cc_boost_timer = 0x74,
+		.reg_dcvs_boost_timer = 0x84,
+		.reg_ps_boost_timer = 0x94,
+		.boost_timer_reg_len = 0x4,
+		.reg_boost_sync_delay = 0xa0,
+		.reg_droop_ctrl = 0xa4,
+		.reg_droop_release_ctrl = 0xa8,
+		.reg_droop_unstall_ctrl = 0xac,
+		.reg_droop_wait_release_ctrl = 0xb0,
+		.reg_droop_timer_ctrl = 0xb8,
+		.reg_droop_sync_delay = 0xbc,
+		.reg_pll_override = 0xc0,
+		.reg_cycle_counter = 0xf00,
+	},
+	.lut_max_entries = LUT_MAX_ENTRIES,
+};
+
 static const struct qcom_cpufreq_soc_data epss_soc_data = {
 	.reg_enable = 0x0,
 	.reg_domain_state = 0x20,
@@ -1429,6 +1493,7 @@ static const struct qcom_cpufreq_soc_data shikra_epss_soc_data = {
 static const struct of_device_id qcom_cpufreq_hw_match[] = {
 	{ .compatible = "qcom,cpufreq-hw", .data = &qcom_soc_data },
 	{ .compatible = "qcom,cpufreq-hw-8998", .data = &msm8998_soc_data },
+	{ .compatible = "qcom,sdm660-cpufreq-hw", .data = &sdm660_soc_data },
 	{ .compatible = "qcom,cpufreq-epss", .data = &epss_soc_data },
 	{ .compatible = "qcom,shikra-epss", .data = &shikra_epss_soc_data },
 	{}
@@ -1568,8 +1633,9 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 	val |= FIELD_PREP(HYSTERESIS_DN_MASK, HYSTERESIS_CC_NS);
 	writel(val, drv_data->base + setup_regs->reg_spm_cc_hyst);
 
-	/* Set the frequency index 0 and override for cluster power collapse */
-	writel(BIT(0), drv_data->base + setup_regs->reg_cc_zero_behav);
+	/* Frequency index override for cluster power collapse */
+	writel(qcom_cpufreq.soc_data->cc_zero_behav,
+	       drv_data->base + setup_regs->reg_cc_zero_behav);
 
 	/* Treat cores in retention as active */
 	writel(0, drv_data->base + setup_regs->reg_spm_core_ret_map);
@@ -1634,14 +1700,14 @@ static int qcom_cpufreq_hw_osm_setup(struct device *cpu_dev,
 		return -ECANCELED;
 
 	/*
-	 * Enable CC-Boost, DCVS-Boost and PS-Boost, matching the downstream
-	 * kernel: the wahoo DT sets only qcom,{boost,safe,ps}-fsm-en, so the
-	 * vendor never enables the WFx, PC/RET-exit and DCVS droop FSMs on
-	 * msm8998.  Those three gate DCVS work on stall/release signals this
-	 * platform does not deliver.
+	 * Enable the boost and droop FSMs the vendor kernel enables on this
+	 * SoC (qcom,{boost,safe,ps,wfx,pc,droop}-fsm-en in its DT).  On
+	 * msm8998 the wahoo DT sets only qcom,{boost,safe,ps}-fsm-en: the WFx,
+	 * PC/RET-exit and DCVS droop FSMs gate DCVS work on stall/release
+	 * signals that platform does not deliver.
 	 */
 	val = readl(drv_data->base + setup_regs->reg_pdn_fsm_ctrl);
-	val |= CC_BOOST_EN | PS_BOOST_EN | DCVS_BOOST_EN;
+	val |= qcom_cpufreq.soc_data->pdn_fsm_en;
 	writel(val, drv_data->base + setup_regs->reg_pdn_fsm_ctrl);
 
 	/* Enable PLL Droop Override */
@@ -1884,15 +1950,17 @@ static int qcom_cpufreq_hw_driver_probe(struct platform_device *pdev)
 			return -EPROBE_DEFER;
 
 		/*
-		 * If there are no power-domains, OSM programming cannot be
+		 * If there is no CPR power domain, OSM programming cannot be
 		 * performed, as in that case, we wouldn't know where to take
-		 * the params from...
+		 * the params from... The CPU can also be in a PSCI idle
+		 * domain, so look the CPR one up by name.
 		 */
-		pd_node = of_parse_phandle(cpu_dev->of_node, "power-domains", 0);
+		ret = qcom_cpr_cpu_pd_index(cpu_dev->of_node);
+		pd_node = ret < 0 ? NULL :
+			  of_parse_phandle(cpu_dev->of_node, "power-domains", ret);
 		if (!pd_node) {
-			ret = PTR_ERR(pd_node);
-			dev_err(cpu_dev, "power domain not found: %d\n", ret);
-			return ret;
+			dev_err(cpu_dev, "CPR power domain not found\n");
+			return -ENODEV;
 		}
 
 		/*
