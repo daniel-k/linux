@@ -404,10 +404,8 @@ static int psci_idle_init_cpu(struct device *dev, int cpu)
 	 * Initialize PSCI idle states.
 	 */
 	ret = psci_cpu_init_idle(dev, drv, cpu, ret);
-	if (ret) {
-		pr_err("CPU %d failed to PSCI idle\n", cpu);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "CPU %d failed to PSCI idle\n", cpu);
 
 	ret = cpuidle_register(drv, NULL);
 	if (ret)
