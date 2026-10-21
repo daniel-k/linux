@@ -2357,6 +2357,277 @@ static const struct cpr_acc_desc sdm630_cpr_acc_desc = {
 	.cpr_desc = &sdm630_cpr_desc,
 };
 
+/*
+ * SDM660 CPRh (KBSS): one controller per cluster, apc0 = power (silver)
+ * cluster at 0x179c8000 and apc1 = performance (gold) cluster at 0x179c4000.
+ *
+ * Data source: the vendor DT for this SoC (cprh-ctrl@179c8000 and
+ * cprh-ctrl@179c4000, compatible "qcom,cprh-sdm660-kbss-regulator") and the
+ * vendor kernel's cprh-kbss-regulator.c tables (sdm660_kbss_fuse_ref_volt,
+ * SDM660_KBSS_{POWER,PERFORMANCE}_CPR_SENSOR_COUNT):
+ *  - ref_uV:            sdm660_kbss_fuse_ref_volt
+ *  - max_uV / min_uV:   qcom,cpr-voltage-ceiling / -floor of the highest
+ *                       corner of each fuse corner (qcom,cpr-corner-fmax-map)
+ *  - range_uV:          qcom,cpr-floor-to-ceiling-max-range, same corner
+ *  - volt_oloop_adjust: qcom,cpr-open-loop-voltage-fuse-adjustment
+ *  - volt_cloop_adjust: qcom,cpr-closed-loop-voltage-fuse-adjustment
+ *  - RO scaling:        qcom,cpr-ro-scaling-factor (same for every corner)
+ *  - controller timings: qcom,cpr-loop-time, -idle-cycles, -count-repeat,
+ *    -step-quot-init-{min,max}, -consecutive-{up,down}, -{up,down}-threshold,
+ *    qcom,cpr-voltage-settling-time = 1760 ns -> 33 ref clocks at 19.2 MHz,
+ *    qcom,cpr-corner-switch-delay-time = 1042 ns -> 20 ref clocks / 4 = 5,
+ *    qcom,apm-{threshold,crossover,hysteresis}-voltage, qcom,voltage-base,
+ *    qcom,voltage-step.
+ * max_volt_scale/max_quot_scale have no vendor equivalent and are carried
+ * over from the SDM630 data (they only cap the interpolation, keeping the
+ * interpolated corners closer to the higher fuse corner).
+ */
+static const int sdm660_pwrcl_scaling_factor[][CPR3_RO_COUNT] = {
+	/* Same RO factors for all fuse corners */
+	{
+		3600, 3600, 3830, 2430, 2520, 2700, 1790, 1760,
+		1970, 1880, 2110, 2010, 2510, 4900, 4370, 4780,
+	}
+};
+
+static const int sdm660_perfcl_scaling_factor[][CPR3_RO_COUNT] = {
+	/* Same RO factors for all fuse corners */
+	{
+		4040, 4230,    0, 2210, 2560, 2450, 2230, 2220,
+		2410, 2300, 2560, 2470, 1600, 3120, 2620, 2280,
+	}
+};
+
+static const struct cpr_thread_desc sdm660_thread_pwrcl = {
+	.controller_id = 0,
+	.hw_tid = 0,
+	.ro_scaling_factor = sdm660_pwrcl_scaling_factor,
+	.ro_avail_corners = ARRAY_SIZE(sdm660_pwrcl_scaling_factor),
+	.sensor_range_start = 0,
+	.sensor_range_end = 6,	/* SDM660_KBSS_POWER_CPR_SENSOR_COUNT */
+	.init_voltage_step = 10000,
+	.init_voltage_width = 6,
+	.step_quot_init_min = 12,
+	.step_quot_init_max = 14,
+	.num_fuse_corners = 5,
+	.fuse_corner_data = (struct fuse_corner_data[]){
+		/* fuse corner 0: LowSVS, corners 1-2 */
+		{
+			.ref_uV = 644000,
+			.max_uV = 724000,
+			.min_uV = 588000,
+			.range_uV = 32000,
+			.volt_cloop_adjust = -32000,
+			.volt_oloop_adjust = -4000,
+			.max_volt_scale = 10,
+			.max_quot_scale = 300,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 1: SVS, corner 3 */
+		{
+			.ref_uV = 724000,
+			.max_uV = 724000,
+			.min_uV = 596000,
+			.range_uV = 32000,
+			.volt_cloop_adjust = -30000,
+			.volt_oloop_adjust = 4000,
+			.max_volt_scale = 320,
+			.max_quot_scale = 275,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 2: SVSPLUS, corner 4 */
+		{
+			.ref_uV = 788000,
+			.max_uV = 788000,
+			.min_uV = 652000,
+			.range_uV = 40000,
+			.volt_cloop_adjust = -29000,
+			.volt_oloop_adjust = 7000,
+			.max_volt_scale = 350,
+			.max_quot_scale = 800,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 3: NOM, corner 5 */
+		{
+			.ref_uV = 868000,
+			.max_uV = 868000,
+			.min_uV = 712000,
+			.range_uV = 44000,
+			.volt_cloop_adjust = -23000,
+			.volt_oloop_adjust = 19000,
+			.max_volt_scale = 868,
+			.max_quot_scale = 980,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 4: TURBO_L1, corners 6-8 */
+		{
+			.ref_uV = 1068000,
+			.max_uV = 1068000,
+			.min_uV = 844000,
+			.range_uV = 40000,
+			.volt_cloop_adjust = -21000,
+			.volt_oloop_adjust = -8000,
+			.max_volt_scale = 868,
+			.max_quot_scale = 980,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+	},
+};
+
+static const struct cpr_thread_desc sdm660_thread_perfcl = {
+	.controller_id = 1,
+	.hw_tid = 0,
+	.ro_scaling_factor = sdm660_perfcl_scaling_factor,
+	.ro_avail_corners = ARRAY_SIZE(sdm660_perfcl_scaling_factor),
+	.sensor_range_start = 0,
+	.sensor_range_end = 9,	/* SDM660_KBSS_PERFORMANCE_CPR_SENSOR_COUNT */
+	.init_voltage_step = 10000,
+	.init_voltage_width = 6,
+	.step_quot_init_min = 12,
+	.step_quot_init_max = 14,
+	.num_fuse_corners = 5,
+	.fuse_corner_data = (struct fuse_corner_data[]){
+		/* fuse corner 0: SVS, corners 1-2 */
+		{
+			.ref_uV = 724000,
+			.max_uV = 724000,
+			.min_uV = 596000,
+			.range_uV = 40000,
+			.volt_cloop_adjust = -22000,
+			.volt_oloop_adjust = 16000,
+			.max_volt_scale = 10,
+			.max_quot_scale = 300,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 1: SVSPLUS, corner 3 */
+		{
+			.ref_uV = 788000,
+			.max_uV = 788000,
+			.min_uV = 652000,
+			.range_uV = 40000,
+			.volt_cloop_adjust = -9000,
+			.volt_oloop_adjust = 27000,
+			.max_volt_scale = 320,
+			.max_quot_scale = 275,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 2: NOM, corner 4 */
+		{
+			.ref_uV = 868000,
+			.max_uV = 868000,
+			.min_uV = 712000,
+			.range_uV = 40000,
+			.volt_cloop_adjust = -7000,
+			.volt_oloop_adjust = 39000,
+			.max_volt_scale = 350,
+			.max_quot_scale = 800,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 3: TURBO, corners 5-6 */
+		{
+			.ref_uV = 988000,
+			.max_uV = 988000,
+			.min_uV = 784000,
+			.range_uV = 66000,
+			.volt_cloop_adjust = -2000,
+			.volt_oloop_adjust = 39000,
+			.max_volt_scale = 868,
+			.max_quot_scale = 980,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+		/* fuse corner 4: TURBO_L2, corner 7 */
+		{
+			.ref_uV = 1068000,
+			.max_uV = 1068000,
+			.min_uV = 844000,
+			.range_uV = 40000,
+			.volt_cloop_adjust = 11000,
+			.volt_oloop_adjust = 20000,
+			.max_volt_scale = 868,
+			.max_quot_scale = 980,
+			.quot_offset = 0,
+			.quot_scale = 1,
+			.quot_adjust = 0,
+			.quot_offset_scale = 5,
+			.quot_offset_adjust = 0,
+		},
+	},
+};
+
+/*
+ * The vendor DT sets qcom,cpr-hw-closed-loop; it stays off here until the
+ * fused open-loop voltages have been validated on hardware.
+ */
+static const struct cpr_desc sdm660_cpr_desc = {
+	.cpr_type = CTRL_TYPE_CPRH,
+	.num_threads = 2,
+	.apm_threshold = 872000,
+	.apm_crossover = 872000,
+	.apm_hysteresis = 20000,
+	.cpr_base_voltage = 400000,
+	.cpr_max_voltage = 1300000,
+	.timer_delay_us = 5000,
+	.timer_cons_up = 0,
+	.timer_cons_down = 2,
+	.up_threshold = 2,
+	.down_threshold = 2,
+	.idle_clocks = 15,
+	.count_mode = CPR3_CPR_CTL_COUNT_MODE_ALL_AT_ONCE_MIN,
+	.count_repeat = 14,
+	.gcnt_us = 1,
+	.vreg_step_fixed = 4000,
+	.vreg_step_up_limit = 1,
+	.vreg_step_down_limit = 1,
+	.vdd_settle_time_us = 33,
+	.corner_settle_time_us = 5,
+	.reduce_to_corner_uV = true,
+	.hw_closed_loop_en = false,
+	.threads = (const struct cpr_thread_desc *[]) {
+		&sdm660_thread_pwrcl,
+		&sdm660_thread_perfcl,
+	},
+};
+
+static const struct cpr_acc_desc sdm660_cpr_acc_desc = {
+	.cpr_desc = &sdm660_cpr_desc,
+};
+
 static int cpr_power_off(struct generic_pm_domain *domain)
 {
 	struct cpr_thread *thread = container_of(domain, struct cpr_thread, pd);
@@ -2495,7 +2766,8 @@ unlock:
 /**
  * cprh_thread_from_cpu() - Find the CPRh thread that supplies a CPU
  * @cpu_dev: CPU device, whose node names the controller and the thread
- *           in its "power-domains" property
+ *           in its "power-domains" property ("cpr" when the CPU also sits
+ *           in a PSCI idle domain, see qcom_cpr_cpu_pd_index())
  *
  * CPR-Hardened runs its loop in hardware: the domain has no usable
  * regulator and its performance states are a no-op, so a consumer gains
@@ -2510,10 +2782,14 @@ static struct cpr_thread *cprh_thread_from_cpu(struct device *cpu_dev)
 	struct of_phandle_args args;
 	struct platform_device *pdev;
 	struct cpr_drv *drv;
-	int ret;
+	int idx, ret;
+
+	idx = qcom_cpr_cpu_pd_index(cpu_dev->of_node);
+	if (idx < 0)
+		return ERR_PTR(idx);
 
 	ret = of_parse_phandle_with_args(cpu_dev->of_node, "power-domains",
-					 "#power-domain-cells", 0, &args);
+					 "#power-domain-cells", idx, &args);
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -3090,6 +3366,7 @@ static void cpr_remove(struct platform_device *pdev)
 static const struct of_device_id cpr3_match_table[] = {
 	{ .compatible = "qcom,msm8998-cprh", .data = &msm8998_cpr_acc_desc },
 	{ .compatible = "qcom,sdm630-cprh", .data = &sdm630_cpr_acc_desc },
+	{ .compatible = "qcom,sdm660-cprh", .data = &sdm660_cpr_acc_desc },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, cpr3_match_table);
