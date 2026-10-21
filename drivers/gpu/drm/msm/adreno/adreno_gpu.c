@@ -11,6 +11,7 @@
 #include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/kernel.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/mdt_loader.h>
@@ -1100,6 +1101,23 @@ static int adreno_get_pwrlevels(struct device *dev,
 	int ret;
 
 	gpu->fast_rate = 0;
+
+	/*
+	 * Rails beyond the one the platform core attaches: SDM660 feeds GX from
+	 * CX through the GFX LDO, so its OPPs carry required-opps for both CX
+	 * and MX. The OPP core only drives those through attached domain devs.
+	 */
+	if (of_count_phandle_with_args(dev->of_node, "power-domains",
+				       "#power-domain-cells") > 1) {
+		struct dev_pm_domain_attach_data pd_data = {
+			.pd_flags = PD_FLAG_DEV_LINK_ON | PD_FLAG_REQUIRED_OPP,
+		};
+		struct dev_pm_domain_list *pds;
+
+		ret = devm_pm_domain_attach_list(dev, &pd_data, &pds);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "failed to attach power domains\n");
+	}
 
 	/* devm_pm_opp_of_add_table may error out but will still create an OPP table */
 	ret = devm_pm_opp_of_add_table(dev);

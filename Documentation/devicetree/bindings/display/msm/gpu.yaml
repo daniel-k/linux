@@ -100,7 +100,15 @@ properties:
     type: object
 
   power-domains:
-    maxItems: 1
+    minItems: 1
+    items:
+      - description: GPU power domain, or the CX rail when the MX rail is listed too
+      - description: MX rail (Adreno 5xx without a GMU, voted through required-opps)
+
+  power-domain-names:
+    items:
+      - const: cx
+      - const: mx
 
   zap-shader:
     type: object
