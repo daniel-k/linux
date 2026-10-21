@@ -98,9 +98,13 @@ static const struct spm_reg_data spm_reg_660_gold_l2  = {
 	.avs_limit = 0x4580458,
 };
 
+/*
+ * The SDM660 vendor DT programs qcom,saw2-avs-ctl = <0x1010031> on both the
+ * gold and the silver L2 SAW; 0x101c031 also set MIN_VLVL (bits 15:10).
+ */
 static const struct spm_reg_data spm_reg_660_silver_l2  = {
 	.reg_offset = spm_reg_offset_v4_1,
-	.avs_ctl = 0x101c031,
+	.avs_ctl = 0x1010031,
 	.avs_limit = 0x4580458,
 };
 
@@ -527,10 +531,19 @@ static int spm_dev_probe(struct platform_device *pdev)
 	drv->dev = &pdev->dev;
 	platform_set_drvdata(pdev, drv);
 
-	/* Write the SPM sequences first.. */
-	addr = drv->reg_base + drv->reg_data->reg_offset[SPM_REG_SEQ_ENTRY];
-	__iowrite32_copy(addr, drv->reg_data->seq,
-			ARRAY_SIZE(drv->reg_data->seq) / 4);
+	/*
+	 * Write the SPM sequences first..
+	 * The SAW v4.1 L2 data only carries AVS settings and has no sequence
+	 * entry offset: the empty sequence would be copied to offset 0, which
+	 * is SPM_CTL on that layout.  The SDM660 vendor kernel does not write
+	 * the L2 SAW sequencer at init either.
+	 */
+	if (drv->reg_data->reg_offset != spm_reg_offset_v4_1) {
+		addr = drv->reg_base +
+		       drv->reg_data->reg_offset[SPM_REG_SEQ_ENTRY];
+		__iowrite32_copy(addr, drv->reg_data->seq,
+				 ARRAY_SIZE(drv->reg_data->seq) / 4);
+	}
 
 	/*
 	 * ..and then the control registers.
