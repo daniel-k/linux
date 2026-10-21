@@ -34,6 +34,24 @@ patternProperties:
         minItems: 1
         maxItems: 2
 
+      qcom,opp-oloop-vadj:
+        description: |
+          Open-loop voltage adjustment in microvolts, applied on top of the
+          voltage calculated from the fuses. One entry per CPR thread, in the
+          same order as qcom,opp-fuse-level. If absent, no adjustment is done.
+        $ref: /schemas/types.yaml#/definitions/int32-array
+        minItems: 1
+        maxItems: 2
+
+      qcom,opp-cloop-vadj:
+        description: |
+          Closed-loop voltage adjustment in microvolts, used to fine-tune the
+          target quotient. One entry per CPR thread, in the same order as
+          qcom,opp-fuse-level. If absent, no adjustment is done.
+        $ref: /schemas/types.yaml#/definitions/int32-array
+        minItems: 1
+        maxItems: 2
+
     required:
       - opp-level
       - qcom,opp-fuse-level

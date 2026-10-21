@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/avs/qcom,cprh.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm Core Power Reduction Hardened (CPRh)
+
+maintainers:
+  - Noa Himesaka <himesaka@noa.codes>
+
+description: |
+  CPRh is the hardware-managed variant of Core Power Reduction found on the
+  application CPU clusters of some Qualcomm SoCs. The OS programs the voltage
+  and quotient tables, computed from fuse data, and the hardware (OSM) then
+  requests voltages from the PMIC on its own, so the regulator is not accessed
+  by the OS. Each register region is one CPR thread (CPU cluster).
+
+  The OPP table referenced by operating-points-v2 holds the virtual corners
+  (operating-points-v2-qcom-level). The CPU OPP tables select a corner with
+  required-opps.
+
+properties:
+  compatible:
+    enum:
+      - qcom,msm8998-cprh
+      - qcom,sdm630-cprh
+      - qcom,sdm660-cprh
+
+  reg:
+    minItems: 1
+    maxItems: 2
+    description: Register region of each CPR thread, in thread order.
+
+  clocks:
+    items:
+      - description: Reference clock.
+
+  clock-names:
+    items:
+      - const: ref
+
+  operating-points-v2:
+    description: Phandle to the OPP table of virtual corners.
+
+  power-domains:
+    maxItems: 1
+    description: Parent power domain providing the voltage rail.
+
+  '#power-domain-cells':
+    const: 1
+
+  nvmem-cells:
+    minItems: 2
+    maxItems: 64
+    description: Fuse cells holding speed bin, fuse revision and per-thread
+      quotients, quotient offsets, initial voltages and ring oscillator
+      selections.
+
+  nvmem-cell-names:
+    minItems: 2
+    maxItems: 64
+    items:
+      anyOf:
+        - enum:
+            - cpr_speed_bin
+            - cpr_fuse_revision
+        - pattern: '^cpr[0-9]_(quotient[1-9]|quotient_offset[2-9]|init_voltage[1-9]|ring_osc[1-9])$'
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+  - operating-points-v2
+  - '#power-domain-cells'
+  - nvmem-cells
+  - nvmem-cell-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,gcc-sdm660.h>
+    #include <dt-bindings/power/qcom-rpmpd.h>
+
+    power-controller@179c8000 {
+        compatible = "qcom,sdm660-cprh";
+        reg = <0x179c8000 0x4000>, <0x179c4000 0x4000>;
+
+        clocks = <&gcc GCC_HMSS_RBCPR_CLK>;
+        clock-names = "ref";
+
+        operating-points-v2 = <&cprh_opp_table>;
+        power-domains = <&rpmpd SDM660_VDDCX_AO>;
+        #power-domain-cells = <1>;
+
+        nvmem-cells = <&cpr_efuse_speedbin>, <&cpr_fuse_revision>;
+        nvmem-cell-names = "cpr_speed_bin", "cpr_fuse_revision";
+    };

@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/opp/opp-v2-qcom-osm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm OSM CPU OPP
+
+maintainers:
+  - Noa Himesaka <himesaka@noa.codes>
+
+allOf:
+  - $ref: opp-v2-base.yaml#
+
+description:
+  CPU OPP table of a cluster whose OSM (Operating State Manager) look-up
+  table is programmed by the OS, as on SDM630/SDM636/SDM660 where the
+  boot firmware leaves it empty. Next to the frequency, every OPP carries
+  the raw OSM fields of its look-up table entry, and its CPR corner through
+  required-opps.
+
+properties:
+  compatible:
+    const: operating-points-v2-qcom-osm
+
+  opp-shared: true
+
+patternProperties:
+  '^opp-?[0-9]+$':
+    type: object
+    additionalProperties: false
+
+    properties:
+      opp-hz: true
+
+      opp-supported-hw: true
+
+      required-opps: true
+
+      turbo-mode: true
+
+      qcom,pll-override:
+        description:
+          PLL override word of this frequency's OSM look-up table entry.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+      qcom,spare-data:
+        description:
+          Spare data field of this frequency's OSM look-up table entry.
+          Defaults to 0 if absent.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+      qcom,pll-div:
+        description:
+          Divider field of this frequency's OSM look-up table entry.
+          Defaults to 0 if absent.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+    required:
+      - opp-hz
+      - required-opps
+      - qcom,pll-override
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    opp-table {
+        compatible = "operating-points-v2-qcom-osm";
+        opp-shared;
+
+        opp-300000000 {
+            opp-hz = /bits/ 64 <300000000>;
+            required-opps = <&cprh_opp1>;
+            qcom,pll-override = <0x1200020>;
+            qcom,spare-data = <1>;
+        };
+
+        opp-633600000 {
+            opp-hz = /bits/ 64 <633600000>;
+            required-opps = <&cprh_opp2>;
+            qcom,pll-override = <0x3200020>;
+            qcom,spare-data = <1>;
+            qcom,pll-div = <1>;
+        };
+    };
