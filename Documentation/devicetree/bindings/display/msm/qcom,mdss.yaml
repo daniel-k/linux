@@ -54,6 +54,7 @@ properties:
           - description: Display axi clock
           - description: Display vsync clock
           - description: Display core clock
+          - description: MMSS NoC AHB clock
       - minItems: 1
         items:
           - description: Display abh clock
@@ -67,6 +68,7 @@ properties:
           - const: bus
           - const: vsync
           - const: core
+          - const: mnoc
       - minItems: 1
         items:
           - const: iface

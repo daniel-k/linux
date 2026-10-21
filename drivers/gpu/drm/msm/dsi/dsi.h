@@ -29,7 +29,7 @@ enum msm_dsi_phy_usecase {
 	MSM_DSI_PHY_SLAVE,
 };
 
-#define DSI_BUS_CLK_MAX		4
+#define DSI_BUS_CLK_MAX		5
 
 struct msm_dsi {
 	struct drm_device *dev;

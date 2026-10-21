@@ -135,8 +135,9 @@ static const struct msm_dsi_config msm8998_dsi_cfg = {
 	},
 };
 
+/* mnoc first: dsi_core_clk_start/stop nest the iface vote inside it (RS6 1.80 kernel) */
 static const char * const dsi_sdm660_bus_clk_names[] = {
-	"iface", "bus", "core", "core_mmss",
+	"mnoc", "iface", "bus", "core", "core_mmss",
 };
 
 static const struct regulator_bulk_data sdm660_dsi_regulators[] = {
