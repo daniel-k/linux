@@ -21,6 +21,7 @@
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/usb/role.h>
 #include <linux/workqueue.h>
 
 /* clang-format off */
@@ -100,6 +101,9 @@
 #define USBIN_UV_RT_STS_BIT				BIT(2)
 #define USBIN_LT_3P6V_RT_STS_BIT			BIT(1)
 #define USBIN_COLLAPSE_RT_STS_BIT			BIT(0)
+
+#define CMD_OTG						0x140
+#define OTG_EN_BIT					BIT(0)
 
 #define OTG_CFG						0x153
 #define OTG_RESERVED_MASK				GENMASK(7, 6)
@@ -400,6 +404,10 @@ struct smb_chip {
 	struct iio_channel *usb_in_v_chan;
 
 	struct power_supply *chg_psy;
+
+	/* optional: dwc3 role switch, for host mode with VBUS out to a sink */
+	struct usb_role_switch *role_sw;
+	bool otg_on;
 };
 
 static enum power_supply_property smb_properties[] = {
@@ -822,6 +830,65 @@ static irqreturn_t smb_handle_usb_plugin(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/*
+ * A sink on the Type-C port (stock smblib_get_prop_typec_mode: DFP mode, and
+ * TYPE_C_STATUS_2 Rd-open or Rd-Ra = SINK / SINK_POWERED_CABLE): host role and
+ * VBUS from the OTG boost. Anything else: VBUS off, device role.
+ */
+static void smb_update_typec_role(struct smb_chip *chip)
+{
+	unsigned int stat4, stat2;
+	bool sink = false;
+	int rc;
+
+	if (!chip->role_sw)
+		return;
+
+	rc = regmap_read(chip->regmap, chip->base + TYPE_C_STATUS_4, &stat4);
+	if (!rc)
+		rc = regmap_read(chip->regmap, chip->base + TYPE_C_STATUS_2, &stat2);
+	if (rc) {
+		dev_err(chip->dev, "Couldn't read Type-C status: %d\n", rc);
+		return;
+	}
+	if ((stat4 & TYPEC_DEBOUNCE_DONE_STATUS_BIT) && (stat4 & UFP_DFP_MODE_STATUS_BIT))
+		sink = stat2 & (DFP_RD_OPEN_BIT | DFP_RD_RA_VCONN_BIT);
+
+	if (sink == chip->otg_on)
+		return;
+
+	if (sink) {
+		rc = regmap_update_bits(chip->regmap, chip->base + CMD_OTG,
+					OTG_EN_BIT, OTG_EN_BIT);
+		if (rc) {
+			dev_err(chip->dev, "Couldn't enable VBUS: %d\n", rc);
+			return;
+		}
+		usb_role_switch_set_role(chip->role_sw, USB_ROLE_HOST);
+	} else {
+		usb_role_switch_set_role(chip->role_sw, USB_ROLE_DEVICE);
+		regmap_update_bits(chip->regmap, chip->base + CMD_OTG, OTG_EN_BIT, 0);
+	}
+	chip->otg_on = sink;
+	dev_dbg(chip->dev, "Type-C sink %s\n", sink ? "attached" : "gone");
+}
+
+static irqreturn_t smb_handle_typec_change(int irq, void *data)
+{
+	smb_update_typec_role(data);
+
+	return IRQ_HANDLED;
+}
+
+static void smb_otg_off(void *data)
+{
+	struct smb_chip *chip = data;
+
+	if (chip->otg_on)
+		regmap_update_bits(chip->regmap, chip->base + CMD_OTG, OTG_EN_BIT, 0);
+	usb_role_switch_put(chip->role_sw);
+}
+
 static irqreturn_t smb_handle_usb_icl_change(int irq, void *data)
 {
 	struct smb_chip *chip = data;
@@ -1123,6 +1190,20 @@ static int smb_probe(struct platform_device *pdev)
 
 	/* Initialise charger state */
 	schedule_delayed_work(&chip->status_change_work, 0);
+
+	if (of_property_present(chip->dev->of_node, "usb-role-switch")) {
+		chip->role_sw = usb_role_switch_get(chip->dev);
+		if (IS_ERR(chip->role_sw))
+			return dev_err_probe(chip->dev, PTR_ERR(chip->role_sw),
+					     "Couldn't get USB role switch\n");
+		rc = devm_add_action_or_reset(chip->dev, smb_otg_off, chip);
+		if (rc)
+			return rc;
+		rc = smb_init_irq(chip, NULL, "type-c-change", smb_handle_typec_change);
+		if (rc)
+			return rc;
+		smb_update_typec_role(chip);
+	}
 
 	return 0;
 }

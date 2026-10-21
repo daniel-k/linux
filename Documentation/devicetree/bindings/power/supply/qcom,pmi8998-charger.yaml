@@ -19,14 +19,23 @@ properties:
     maxItems: 1
 
   interrupts:
-    maxItems: 4
+    minItems: 4
+    maxItems: 5
 
   interrupt-names:
+    minItems: 4
     items:
       - const: usb-plugin
       - const: bat-ov
       - const: wdog-bark
       - const: usbin-icl-change
+      - const: type-c-change
+
+  usb-role-switch:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      USB controller role switch. With the type-c-change interrupt, the
+      charger puts it in host mode and drives VBUS when a sink is attached.
 
   io-channels:
     items:
@@ -39,6 +48,9 @@ properties:
       - const: usbin_v
 
   monitored-battery: true
+
+dependencies:
+  usb-role-switch: [ interrupts ]
 
 required:
   - compatible
