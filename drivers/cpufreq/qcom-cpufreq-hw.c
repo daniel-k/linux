@@ -1832,6 +1832,21 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 		return -ENODEV;
 	}
 
+	/*
+	 * The bandwidth is only voted from ->target_index(), and the core
+	 * skips that for the frequency the policy already runs at.  Vote it
+	 * for the starting frequency here, or a policy that stays there
+	 * (e.g. under the performance governor) never asks for any.
+	 */
+	if (icc_scaling_enabled) {
+		unsigned int freq = qcom_cpufreq_get_freq(policy);
+
+		ret = qcom_cpufreq_set_bw(policy, freq);
+		if (ret)
+			dev_warn(cpu_dev, "Failed to set bandwidth for %u kHz: %d\n",
+				 freq, ret);
+	}
+
 	return qcom_cpufreq_hw_lmh_init(policy, index);
 }
 
