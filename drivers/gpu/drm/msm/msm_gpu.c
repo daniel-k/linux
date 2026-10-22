@@ -82,6 +82,13 @@ static int disable_clk(struct msm_gpu *gpu)
 	if (gpu->rbbmtimer_clk)
 		clk_set_rate(gpu->rbbmtimer_clk, 0);
 
+	/*
+	 * Remove the bus vote. Parking the clock leaves an OPP selected, and
+	 * with it that OPP's bandwidth on the GPU's memory path, which would
+	 * keep DDR up for as long as the GPU is off.
+	 */
+	dev_pm_opp_set_opp(&gpu->pdev->dev, NULL);
+
 	return 0;
 }
 
