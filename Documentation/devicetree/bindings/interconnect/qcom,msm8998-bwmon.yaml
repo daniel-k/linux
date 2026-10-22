@@ -25,6 +25,10 @@ properties:
       - const: qcom,msm8998-bwmon       # BWMON v4
       - items:
           - enum:
+              - qcom,sdm660-cpu-bwmon
+          - const: qcom,msm8998-bwmon
+      - items:
+          - enum:
               - qcom,glymur-cpu-bwmon
               - qcom,kaanapali-cpu-bwmon
               - qcom,qcm2290-cpu-bwmon
@@ -93,7 +97,8 @@ allOf:
   - if:
       properties:
         compatible:
-          const: qcom,msm8998-bwmon
+          contains:
+            const: qcom,msm8998-bwmon
     then:
       properties:
         reg:
