@@ -601,9 +601,10 @@
 			#power-domain-cells = <1>;
 			reg = <0x00100000 0x94000>;
 
-			clock-names = "xo", "sleep_clk";
+			clock-names = "xo", "sleep_clk", "cxo2";
 			clocks = <&xo_board>,
-					<&sleep_clk>;
+				 <&sleep_clk>,
+				 <&rpmcc RPM_SMD_LN_BB_A_CLK>;
 		};
 
 		rpm_msg_ram: sram@778000 {
