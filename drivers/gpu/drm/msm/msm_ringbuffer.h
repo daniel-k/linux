@@ -92,6 +92,21 @@ struct msm_ringbuffer {
 	int hangcheck_progress_retries;
 
 	/**
+	 * hangcheck_deferred: the last hangcheck skipped this ring because
+	 * the CP was busy with another ring; the next check gives it a full
+	 * period before judging it.
+	 */
+	bool hangcheck_deferred;
+
+	/**
+	 * hangcheck_stranded: the last hangcheck found this ring with work
+	 * and no progress while the CP sat on another ring with nothing to
+	 * do.  A preemption switch in flight looks like that for a moment, so
+	 * the ring is only judged hung when the next check finds it the same.
+	 */
+	bool hangcheck_stranded;
+
+	/**
 	 * last_cp_state: The state of the CP at the last call to gpu->progress()
 	 */
 	struct msm_cp_state last_cp_state;

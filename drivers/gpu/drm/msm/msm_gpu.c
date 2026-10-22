@@ -698,6 +698,8 @@ static void recover_worker(struct kthread_work *work)
 
 		ring->hangcheck_fence = fence;
 		ring->hangcheck_progress_retries = 0;
+		ring->hangcheck_deferred = false;
+		ring->hangcheck_stranded = false;
 	}
 
 	/* Faults reported up to here were the ones the reset just ended */
@@ -799,34 +801,100 @@ static bool made_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	return true;
 }
 
+/* Does the ring have submits that have not completed? */
+static bool ring_fence_pending(struct msm_ringbuffer *ring)
+{
+	return fence_before(ring_completed_fence(ring), ring->fctx->last_fence);
+}
+
 static void hangcheck_handler(struct timer_list *t)
 {
 	struct msm_gpu *gpu = timer_container_of(gpu, t, hangcheck_timer);
 	struct drm_device *dev = gpu->dev;
-	struct msm_ringbuffer *ring = gpu->funcs->active_ring(gpu);
-	uint32_t fence = ring->memptrs->fence;
+	struct msm_ringbuffer *active = gpu->funcs->active_ring(gpu);
+	bool active_pending = ring_fence_pending(active);
+	bool pending = false;
+	int i;
 
-	if (fence != ring->hangcheck_fence) {
-		/* some progress has been made.. ya! */
-		ring->hangcheck_fence = fence;
-		ring->hangcheck_progress_retries = 0;
-	} else if (fence_before(fence, ring->fctx->last_fence) &&
-			!made_progress(gpu, ring)) {
+	/*
+	 * Check every ring, not only the one the CP is on: a ring with work
+	 * the CP never switches to (a lost preemption, a preemption state
+	 * machine stuck after a fault) is hung too, with the GPU looking idle.
+	 * While the active ring has work of its own the others are merely
+	 * waiting for it, so only the active ring is required to progress.
+	 * A memptr that went backwards does not make completed work pending
+	 * again: with nothing left to blame, recovery would bail and the
+	 * check would fire again every period.
+	 */
+	for (i = 0; i < gpu->nr_rings; i++) {
+		struct msm_ringbuffer *ring = gpu->rb[i];
+		uint32_t fence = ring_completed_fence(ring);
+		bool ring_pending = fence_before(fence, ring->fctx->last_fence);
+
+		pending |= ring_pending;
+
+		if (fence != ring->hangcheck_fence || !ring_pending) {
+			/* some progress has been made.. ya! (or nothing to do) */
+			ring->hangcheck_fence = fence;
+			ring->hangcheck_progress_retries = 0;
+			ring->hangcheck_deferred = false;
+			ring->hangcheck_stranded = false;
+			continue;
+		}
+
+		if (ring != active) {
+			if (active_pending) {
+				/* waiting for the ring the CP is busy with */
+				ring->hangcheck_deferred = true;
+				ring->hangcheck_stranded = false;
+				continue;
+			}
+
+			if (!ring->hangcheck_stranded) {
+				/*
+				 * The CP is idle on another ring: a switch to
+				 * this one may be in flight.  Look again next
+				 * period.
+				 */
+				ring->hangcheck_stranded = true;
+				ring->hangcheck_deferred = false;
+				continue;
+			}
+		} else {
+			if (ring->hangcheck_deferred || ring->hangcheck_stranded) {
+				/*
+				 * First check since the CP switched to this
+				 * ring: give it a full period to show progress.
+				 */
+				ring->hangcheck_deferred = false;
+				ring->hangcheck_stranded = false;
+				continue;
+			}
+
+			if (made_progress(gpu, ring))
+				continue;
+		}
+
 		/* no progress and not done.. hung! */
 		ring->hangcheck_fence = fence;
 		ring->hangcheck_progress_retries = 0;
+		ring->hangcheck_stranded = false;
 		DRM_DEV_ERROR(dev->dev, "%s: hangcheck detected gpu lockup rb %d!\n",
 				gpu->name, ring->id);
 		DRM_DEV_ERROR(dev->dev, "%s:     completed fence: %u\n",
 				gpu->name, fence);
 		DRM_DEV_ERROR(dev->dev, "%s:     submitted fence: %u\n",
 				gpu->name, ring->fctx->last_fence);
+		if (ring != active)
+			DRM_DEV_ERROR(dev->dev, "%s:     the CP is on the idle rb %d\n",
+					gpu->name, active->id);
 
 		msm_gpu_recover(gpu, MSM_GPU_RECOVER_HANG);
+		break;
 	}
 
 	/* if still more pending work, reset the hangcheck timer: */
-	if (fence_after(ring->fctx->last_fence, ring->hangcheck_fence))
+	if (pending)
 		hangcheck_timer_reset(gpu);
 
 	/* workaround for missing irq: */
