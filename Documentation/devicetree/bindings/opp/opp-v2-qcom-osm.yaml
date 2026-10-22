@@ -17,7 +17,8 @@ description:
   table is programmed by the OS, as on SDM630/SDM636/SDM660 where the
   boot firmware leaves it empty. Next to the frequency, every OPP carries
   the raw OSM fields of its look-up table entry, and its CPR corner through
-  required-opps.
+  required-opps. An OPP may also name the peak bandwidth the CPUs vote on
+  their interconnect paths while they run at that frequency.
 
 properties:
   compatible:
@@ -36,6 +37,8 @@ patternProperties:
       opp-supported-hw: true
 
       required-opps: true
+
+      opp-peak-kBps: true
 
       turbo-mode: true
 
@@ -85,5 +88,6 @@ examples:
             qcom,pll-override = <0x3200020>;
             qcom,spare-data = <1>;
             qcom,pll-div = <1>;
+            opp-peak-kBps = <799014>;
         };
     };
