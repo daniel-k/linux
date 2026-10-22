@@ -1244,8 +1244,9 @@ static void a5xx_fault_detect_irq(struct msm_gpu *gpu)
 	if (gpu_read(gpu, REG_A5XX_RBBM_STATUS3) & BIT(24))
 		return;
 
-	DRM_DEV_ERROR(dev->dev, "gpu fault ring %d fence %x status %8.8X rb %4.4x/%4.4x ib1 %16.16llX/%4.4x ib2 %16.16llX/%4.4x\n",
+	DRM_DEV_ERROR(dev->dev, "gpu fault ring %d fence %x completed %x status %8.8X rb %4.4x/%4.4x ib1 %16.16llX/%4.4x ib2 %16.16llX/%4.4x\n",
 		ring ? ring->id : -1, ring ? ring->fctx->last_fence : 0,
+		ring ? ring->memptrs->fence : 0,
 		gpu_read(gpu, REG_A5XX_RBBM_STATUS),
 		gpu_read(gpu, REG_A5XX_CP_RB_RPTR),
 		gpu_read(gpu, REG_A5XX_CP_RB_WPTR),
@@ -1256,6 +1257,13 @@ static void a5xx_fault_detect_irq(struct msm_gpu *gpu)
 
 	/* Turn off the hangcheck timer to keep it from bothering us */
 	timer_delete(&gpu->hangcheck_timer);
+
+	/*
+	 * Turn off interrupts to avoid triggering recovery again: the hang
+	 * detector keeps firing every few ms until the reset, which re-enables
+	 * them from hw_init.
+	 */
+	gpu_write(gpu, REG_A5XX_RBBM_INT_0_MASK, 0);
 
 	msm_gpu_hw_fault(gpu);
 }
