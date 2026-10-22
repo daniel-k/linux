@@ -309,9 +309,21 @@ void a5xx_preempt_fini(struct msm_gpu *gpu)
 	struct a5xx_gpu *a5xx_gpu = to_a5xx_gpu(adreno_gpu);
 	int i;
 
+	/*
+	 * This runs twice when preemption gets turned off after init (no
+	 * WHERE_AM_I in the microcode, or a failed init): once from there,
+	 * with nr_rings dropping to 1 afterwards, and again from
+	 * a5xx_destroy().  Forget what was freed, and stop a5xx_submit()
+	 * from pointing the CP at a preemption record that is gone.
+	 */
 	for (i = 0; i < gpu->nr_rings; i++) {
 		msm_gem_kernel_put(a5xx_gpu->preempt_bo[i], gpu->vm);
 		msm_gem_kernel_put(a5xx_gpu->preempt_counters_bo[i], gpu->vm);
+
+		a5xx_gpu->preempt_bo[i] = NULL;
+		a5xx_gpu->preempt_counters_bo[i] = NULL;
+		a5xx_gpu->preempt[i] = NULL;
+		a5xx_gpu->preempt_iova[i] = 0;
 	}
 }
 
