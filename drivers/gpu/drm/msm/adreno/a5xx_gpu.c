@@ -1341,7 +1341,11 @@ static const u32 a5xx_registers[] = {
 	0xEAA5, 0xEAC2, ~0,
 };
 
-/* GPMU registers, only valid on parts with a GPMU (a530/a540) */
+/*
+ * GPMU registers, only valid on the parts with a GPMU (A530, A540).  On the
+ * others reading this aperture resets the SoC: a crash dump on SDM660 (A512)
+ * rebooted the device instead of recovering the GPU.
+ */
 static const u32 a5xx_gpmu_registers[] = {
 	0xA800, 0xA800, 0xA820, 0xA828, 0xA840, 0xA87D, 0xA880, 0xA88D,
 	0xA890, 0xA8A3, 0xA8D0, 0xA8D8, 0xA8E0, 0xA8F5, 0xAC60, 0xAC60,
