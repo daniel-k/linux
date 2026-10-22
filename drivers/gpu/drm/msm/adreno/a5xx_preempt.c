@@ -66,8 +66,22 @@ static struct msm_ringbuffer *get_next_ring(struct msm_gpu *gpu)
 
 		spin_lock_irqsave(&ring->preempt_lock, flags);
 		empty = (get_wptr(ring) == gpu->funcs->get_rptr(gpu, ring));
-		if (!empty && ring == a5xx_gpu->cur_ring)
-			empty = ring->memptrs->fence == a5xx_gpu->last_seqno[i];
+		if (!empty && ring == a5xx_gpu->cur_ring) {
+			uint32_t fence = ring->memptrs->fence;
+			uint32_t completed = READ_ONCE(ring->fctx->completed_fence);
+
+			/*
+			 * A memptr that went back behind what already
+			 * completed would keep the CP on this ring forever;
+			 * one ahead of the last fence completes nothing (see
+			 * msm_fence_completed()).
+			 */
+			if (fence_before(fence, completed) ||
+			    fence_after(fence, READ_ONCE(ring->fctx->last_fence)))
+				fence = completed;
+
+			empty = fence == a5xx_gpu->last_seqno[i];
+		}
 		spin_unlock_irqrestore(&ring->preempt_lock, flags);
 
 		if (!empty)

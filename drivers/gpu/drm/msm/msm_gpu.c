@@ -866,8 +866,48 @@ void msm_gpu_retire(struct msm_gpu *gpu)
 {
 	int i;
 
-	for (i = 0; i < gpu->nr_rings; i++)
-		msm_update_fence(gpu->rb[i]->fctx, gpu->rb[i]->memptrs->fence);
+	for (i = 0; i < gpu->nr_rings; i++) {
+		struct msm_ringbuffer *ring = gpu->rb[i];
+		uint32_t completed, last, fence;
+
+		/*
+		 * The GPU writes the fence of each submit in order, after the
+		 * CPU allocated it, so a memptr ahead of the last allocated
+		 * fence or behind one it already wrote was not written by our
+		 * submits (a wild GPU write into the memptrs, which on targets
+		 * without per-process pagetables any user cmdstream can do, or
+		 * a CP re-executing stale ring contents).  Keep it out of
+		 * completed_fence, and say so: the hangcheck and recovery are
+		 * about to deal with that ring.  msm_fence_completed() applies
+		 * the same rule to the memptr it reads directly.
+		 *
+		 * Read completed_fence, then the memptr, then last_fence: each
+		 * is written before the next one can legitimately move past
+		 * it, so a concurrent, legitimate update never looks like
+		 * either anomaly.
+		 */
+		completed = READ_ONCE(ring->fctx->completed_fence);
+		/* pairs with the smp_wmb() in recover_worker() */
+		smp_rmb();
+		fence = ring->memptrs->fence;
+		/* last_fence is bumped before the GPU can write it */
+		smp_rmb();
+		last = READ_ONCE(ring->fctx->last_fence);
+
+		if (fence_after(fence, last)) {
+			dev_err_ratelimited(gpu->dev->dev,
+					    "%s: rb %d: fence memptr %u is ahead of the last submitted fence %u, ignoring it\n",
+					    gpu->name, ring->id, fence, last);
+			continue;
+		}
+
+		if (fence_before(fence, completed))
+			dev_err_ratelimited(gpu->dev->dev,
+					    "%s: rb %d: fence memptr %u went backwards, completed fence is %u\n",
+					    gpu->name, ring->id, fence, completed);
+
+		msm_update_fence(ring->fctx, fence);
+	}
 
 	kthread_queue_work(gpu->worker, &gpu->retire_work);
 	update_sw_cntrs(gpu);

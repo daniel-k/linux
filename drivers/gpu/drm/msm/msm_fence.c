@@ -81,12 +81,35 @@ void msm_fence_context_free(struct msm_fence_context *fctx)
 
 bool msm_fence_completed(struct msm_fence_context *fctx, uint32_t fence)
 {
+	uint32_t memptr;
+
 	/*
 	 * Note: Check completed_fence first, as fenceptr is in a write-combine
 	 * mapping, so it will be more expensive to read.
 	 */
-	return (int32_t)(fctx->completed_fence - fence) >= 0 ||
-		(int32_t)(*fctx->fenceptr - fence) >= 0;
+	if ((int32_t)(fctx->completed_fence - fence) >= 0)
+		return true;
+
+	memptr = *fctx->fenceptr;
+
+	/*
+	 * The GPU writes a seqno only after it was allocated, so a fenceptr
+	 * ahead of the last allocated fence was not written by our submits
+	 * (a wild GPU write: on targets without per-process pagetables any
+	 * user cmdstream can reach the memptrs).  Trusting it would signal
+	 * fences of submits that have not run, and let their BOs be reused
+	 * under the GPU.  last_fence is bumped before the GPU can write the
+	 * new seqno, so read it after the fenceptr.
+	 */
+	smp_rmb();
+	if (fence_after(memptr, READ_ONCE(fctx->last_fence))) {
+		dev_err_ratelimited(fctx->dev->dev,
+				    "%s: fence memptr %u is ahead of the last fence %u, not trusting it\n",
+				    fctx->name, memptr, READ_ONCE(fctx->last_fence));
+		return false;
+	}
+
+	return (int32_t)(memptr - fence) >= 0;
 }
 
 /* called from irq handler and workqueue (in recover path) */
@@ -95,7 +118,12 @@ void msm_update_fence(struct msm_fence_context *fctx, uint32_t fence)
 	unsigned long flags;
 
 	spin_lock_irqsave(&fctx->spinlock, flags);
-	if (fence_after(fence, fctx->completed_fence))
+	/* Never complete past the last fence handed out, see above */
+	if (fence_after(fence, fctx->last_fence))
+		dev_err_ratelimited(fctx->dev->dev,
+				    "%s: completed fence %u is ahead of the last fence %u, ignoring it\n",
+				    fctx->name, fence, fctx->last_fence);
+	else if (fence_after(fence, fctx->completed_fence))
 		fctx->completed_fence = fence;
 	if (msm_fence_completed(fctx, fctx->next_deadline_fence))
 		hrtimer_cancel(&fctx->deadline_timer);
