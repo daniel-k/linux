@@ -23,6 +23,7 @@
 #include <linux/module.h>
 #include <linux/nmi.h>
 #include <linux/stop_machine.h>
+#include <linux/suspend.h>
 #include <linux/sysctl.h>
 #include <linux/tick.h>
 #include <linux/sys_info.h>
@@ -139,6 +140,7 @@ static DEFINE_PER_CPU(atomic_t, hrtimer_interrupts);
 static DEFINE_PER_CPU(int, hrtimer_interrupts_saved);
 static DEFINE_PER_CPU(bool, watchdog_hardlockup_warned);
 static DEFINE_PER_CPU(bool, watchdog_hardlockup_touched);
+static DEFINE_PER_CPU(bool, watchdog_hardlockup_frozen);
 static unsigned long hard_lockup_nmi_warn;
 
 notrace void arch_touch_nmi_watchdog(void)
@@ -157,6 +159,43 @@ EXPORT_SYMBOL(arch_touch_nmi_watchdog);
 void watchdog_hardlockup_touch_cpu(unsigned int cpu)
 {
 	per_cpu(watchdog_hardlockup_touched, cpu) = true;
+}
+
+/**
+ * watchdog_hardlockup_tick_freeze - The local tick is frozen for suspend to idle
+ *
+ * Called by tick_freeze() with interrupts disabled. Until the matching
+ * watchdog_hardlockup_tick_unfreeze(), this CPU does not run its watchdog
+ * hrtimer on purpose, while other CPUs may keep waking up for interrupts and
+ * checking it.
+ */
+void watchdog_hardlockup_tick_freeze(void)
+{
+	WRITE_ONCE(*this_cpu_ptr(&watchdog_hardlockup_frozen), true);
+}
+
+/**
+ * watchdog_hardlockup_tick_unfreeze - The local tick runs again
+ *
+ * Called by tick_unfreeze() with interrupts disabled. The hrtimer has not
+ * caught up yet, so the next check of this CPU is skipped as well.
+ */
+void watchdog_hardlockup_tick_unfreeze(void)
+{
+	__this_cpu_write(watchdog_hardlockup_touched, true);
+	WRITE_ONCE(*this_cpu_ptr(&watchdog_hardlockup_frozen), false);
+}
+
+/*
+ * A CPU whose tick is frozen for suspend to idle is not locked up, however
+ * long it stays there. Only trust the flag while a system suspend is in
+ * progress, so that a CPU which never comes back from suspend to idle is
+ * still reported once the system has resumed.
+ */
+static bool watchdog_hardlockup_is_frozen(unsigned int cpu)
+{
+	return READ_ONCE(per_cpu(watchdog_hardlockup_frozen, cpu)) &&
+	       pm_suspend_in_progress();
 }
 
 static bool is_hardlockup(unsigned int cpu)
@@ -190,6 +229,13 @@ void watchdog_hardlockup_check(unsigned int cpu, struct pt_regs *regs)
 
 	if (per_cpu(watchdog_hardlockup_touched, cpu)) {
 		per_cpu(watchdog_hardlockup_touched, cpu) = false;
+		return;
+	}
+
+	/* Start counting misses again once the CPU leaves suspend to idle */
+	if (watchdog_hardlockup_is_frozen(cpu)) {
+		per_cpu(hrtimer_interrupts_saved, cpu) =
+			atomic_read(&per_cpu(hrtimer_interrupts, cpu));
 		return;
 	}
 

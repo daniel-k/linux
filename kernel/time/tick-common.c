@@ -520,6 +520,8 @@ void tick_freeze(void)
 {
 	raw_spin_lock(&tick_freeze_lock);
 
+	watchdog_hardlockup_tick_freeze();
+
 	tick_freeze_depth++;
 	if (tick_freeze_depth == num_online_cpus()) {
 		trace_suspend_resume(TPS("timekeeping_freeze"),
@@ -578,6 +580,8 @@ void tick_unfreeze(void)
 		touch_softlockup_watchdog();
 		tick_resume_local();
 	}
+
+	watchdog_hardlockup_tick_unfreeze();
 
 	tick_freeze_depth--;
 

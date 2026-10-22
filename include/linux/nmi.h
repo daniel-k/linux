@@ -98,6 +98,11 @@ static inline void arch_touch_nmi_watchdog(void) { }
 #if defined(CONFIG_HARDLOCKUP_DETECTOR_COUNTS_HRTIMER)
 void watchdog_hardlockup_touch_cpu(unsigned int cpu);
 void watchdog_hardlockup_check(unsigned int cpu, struct pt_regs *regs);
+void watchdog_hardlockup_tick_freeze(void);
+void watchdog_hardlockup_tick_unfreeze(void);
+#else
+static inline void watchdog_hardlockup_tick_freeze(void) { }
+static inline void watchdog_hardlockup_tick_unfreeze(void) { }
 #endif
 
 #if defined(CONFIG_HARDLOCKUP_DETECTOR_PERF)
