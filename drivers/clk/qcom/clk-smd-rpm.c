@@ -1421,10 +1421,66 @@ err:
 	return ret;
 }
 
+static bool rpm_smd_clk_desc_has(const struct rpm_smd_clk_desc *desc,
+				  const struct clk_smd_rpm *r)
+{
+	size_t i;
+
+	for (i = 0; i < desc->num_clks; i++)
+		if (desc->clks[i] == r)
+			return true;
+
+	return false;
+}
+
+/*
+ * clk_smd_rpm_handoff() votes every clock on, in the active and in the sleep
+ * set, so that nothing the boot firmware left running is cut before its
+ * consumer probes. A clock and its active-only peer share one RPM resource,
+ * and every prepare or unprepare of either rewrites both sets of it. So a
+ * pair that a consumer has prepared at least once no longer carries the
+ * handoff vote, but a pair nobody ever prepared keeps it for good: unused XO
+ * buffers stay voted on in the sleep set, which keeps the XO itself on and
+ * the SoC out of XO shutdown and VDD minimization.
+ *
+ * Once every consumer has probed, drop the votes of the pairs nobody holds.
+ * A consumer that prepares one of these clocks later votes it again.
+ */
+static void rpm_smd_clk_sync_state(struct device *dev)
+{
+	const struct rpm_smd_clk_desc *desc = of_device_get_match_data(dev);
+	size_t i;
+	int ret;
+
+	if (!desc)
+		return;
+
+	guard(mutex)(&rpm_smd_clk_lock);
+
+	for (i = 0; i < desc->num_clks; i++) {
+		struct clk_smd_rpm *r = desc->clks[i];
+
+		if (!r || r->enabled || r->peer->enabled)
+			continue;
+
+		/* One request per resource: skip the peer of a listed clock. */
+		if (r->active_only && rpm_smd_clk_desc_has(desc, r->peer))
+			continue;
+
+		ret = clk_smd_rpm_set_rate_active(r, 0);
+		if (!ret)
+			ret = clk_smd_rpm_set_rate_sleep(r, 0);
+		if (ret)
+			dev_warn(dev, "failed to drop the handoff vote of %s: %d\n",
+				 clk_hw_get_name(&r->hw), ret);
+	}
+}
+
 static struct platform_driver rpm_smd_clk_driver = {
 	.driver = {
 		.name = "qcom-clk-smd-rpm",
 		.of_match_table = rpm_smd_clk_match_table,
+		.sync_state = rpm_smd_clk_sync_state,
 	},
 	.probe = rpm_smd_clk_probe,
 };
