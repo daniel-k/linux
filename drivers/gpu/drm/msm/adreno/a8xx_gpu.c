@@ -952,7 +952,7 @@ out:
 	gpu_write(gpu, REG_A8XX_CP_INTERRUPT_STATUS_MASK_GLOBAL, 0);
 	gpu_write(gpu, REG_A8XX_RBBM_INT_0_MASK, 0);
 
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 static u32 gpu_periph_read(struct msm_gpu *gpu, u32 dbg_offset)
@@ -1048,7 +1048,7 @@ static void a8xx_fault_detect_irq(struct msm_gpu *gpu)
 	/* Turn off the hangcheck timer to keep it from bothering us */
 	timer_delete(&gpu->hangcheck_timer);
 
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 static void a8xx_sw_fuse_violation_irq(struct msm_gpu *gpu)
@@ -1068,7 +1068,7 @@ static void a8xx_sw_fuse_violation_irq(struct msm_gpu *gpu)
 		      A7XX_CX_MISC_SW_FUSE_VALUE_LPAC)) {
 		timer_delete(&gpu->hangcheck_timer);
 
-		kthread_queue_work(gpu->worker, &gpu->recover_work);
+		msm_gpu_hw_fault(gpu);
 	}
 }
 

@@ -1915,7 +1915,7 @@ static void a6xx_fault_detect_irq(struct msm_gpu *gpu)
 	/* Turn off interrupts to avoid triggering recovery again */
 	gpu_write(gpu, REG_A6XX_RBBM_INT_0_MASK, 0);
 
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 static void a7xx_sw_fuse_violation_irq(struct msm_gpu *gpu)
@@ -1935,7 +1935,7 @@ static void a7xx_sw_fuse_violation_irq(struct msm_gpu *gpu)
 		      A7XX_CX_MISC_SW_FUSE_VALUE_LPAC)) {
 		timer_delete(&gpu->hangcheck_timer);
 
-		kthread_queue_work(gpu->worker, &gpu->recover_work);
+		msm_gpu_hw_fault(gpu);
 	}
 }
 

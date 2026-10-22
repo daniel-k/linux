@@ -222,6 +222,14 @@ struct msm_gpu {
 	 */
 	int global_faults;
 
+	/**
+	 * recover_reasons: why recover_work was queued, MSM_GPU_RECOVER_*
+	 * bits.  Set from irq/timer context, consumed by recover_worker(),
+	 * which also drops whatever was flagged between its start and the
+	 * reset: those requests describe the hardware state the reset ended.
+	 */
+	atomic_t recover_reasons;
+
 	void __iomem *mmio;
 	int irq;
 
@@ -339,6 +347,34 @@ struct msm_gpu_perfcntr {
  * cases, so we don't use it (no need for kernel generated jobs).
  */
 #define NR_SCHED_PRIORITIES (1 + DRM_SCHED_PRIORITY_LOW - DRM_SCHED_PRIORITY_HIGH)
+
+/* The sw hangcheck saw a ring with work and no progress */
+#define MSM_GPU_RECOVER_HANG		BIT(0)
+/*
+ * The hardware reported a fault (CP error caught by the hang detector, a
+ * failed or timed out preemption): the GPU is wedged and gets reset even when
+ * no submit is left to blame.
+ */
+#define MSM_GPU_RECOVER_HW_FAULT	BIT(1)
+
+/**
+ * msm_gpu_recover - ask recover_worker() to run, saying why
+ *
+ * For irq and timer context.  A run of recover_worker() that finds no reason
+ * recorded was queued by a request the previous run's reset already answered,
+ * and does nothing.
+ */
+static inline void msm_gpu_recover(struct msm_gpu *gpu, unsigned int reason)
+{
+	atomic_or(reason, &gpu->recover_reasons);
+	kthread_queue_work(gpu->worker, &gpu->recover_work);
+}
+
+/* The hardware reported a fault, ask for a reset */
+static inline void msm_gpu_hw_fault(struct msm_gpu *gpu)
+{
+	msm_gpu_recover(gpu, MSM_GPU_RECOVER_HW_FAULT);
+}
 
 /**
  * struct msm_context - per-drm_file context

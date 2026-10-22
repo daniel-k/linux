@@ -1257,7 +1257,7 @@ static void a5xx_fault_detect_irq(struct msm_gpu *gpu)
 	/* Turn off the hangcheck timer to keep it from bothering us */
 	timer_delete(&gpu->hangcheck_timer);
 
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 #define RBBM_ERROR_MASK \

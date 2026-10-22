@@ -32,7 +32,7 @@ static void a6xx_gmu_fault(struct a6xx_gmu *gmu)
 	timer_delete(&gpu->hangcheck_timer);
 
 	/* Queue the GPU handler because we need to treat this as a recovery */
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 static irqreturn_t a6xx_gmu_irq(int irq, void *data)

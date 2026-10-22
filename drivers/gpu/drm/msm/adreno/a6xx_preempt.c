@@ -96,7 +96,7 @@ static void a6xx_preempt_timer(struct timer_list *t)
 		return;
 
 	dev_err(dev->dev, "%s: preemption timed out\n", gpu->name);
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 static void preempt_prepare_postamble(struct a6xx_gpu *a6xx_gpu)
@@ -178,7 +178,7 @@ void a6xx_preempt_irq(struct msm_gpu *gpu)
 		set_preempt_state(a6xx_gpu, PREEMPT_FAULTED);
 		dev_err(dev->dev, "%s: Preemption failed to complete\n",
 			gpu->name);
-		kthread_queue_work(gpu->worker, &gpu->recover_work);
+		msm_gpu_hw_fault(gpu);
 		return;
 	}
 

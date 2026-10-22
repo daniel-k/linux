@@ -416,25 +416,93 @@ static void msm_gpu_crashstate_capture(struct msm_gpu *gpu,
  * Hangcheck detection for locked gpu:
  */
 
-static struct msm_gem_submit *
-find_submit(struct msm_ringbuffer *ring, uint32_t fence)
+static void retire_submits(struct msm_gpu *gpu);
+static void hangcheck_timer_reset(struct msm_gpu *gpu);
+
+/*
+ * The fence the ring has completed as far as we are concerned, the same
+ * rules as msm_fence_completed(): the memptr, unless it fell behind what we
+ * already saw it complete, or is ahead of the last fence we handed out.  The
+ * memptr is GPU-written memory in a VM that, on targets without per-process
+ * pagetables, every user cmdstream can write to, and a CP re-executing stale
+ * ring contents writes old seqnos into it, so it can go backwards;
+ * completions we already saw stay complete, and a value no submit of ours
+ * wrote completes nothing.
+ */
+static uint32_t ring_completed_fence(struct msm_ringbuffer *ring)
 {
-	struct msm_gem_submit *submit;
+	uint32_t completed = READ_ONCE(ring->fctx->completed_fence);
+	uint32_t fence;
+
+	/* completed_fence is written after the memptr it was read from */
+	smp_rmb();
+	fence = ring->memptrs->fence;
+	/* last_fence is bumped before the GPU can write the new seqno */
+	smp_rmb();
+
+	if (fence_before(fence, completed) ||
+	    fence_after(fence, READ_ONCE(ring->fctx->last_fence)))
+		return completed;
+
+	return fence;
+}
+
+/*
+ * The oldest submit on the ring whose fence has not signalled, without
+ * signalling anything.  Submits that completed stay on the list until
+ * retire_submits() runs, and the memptr can go back behind a fence that
+ * already signalled (see ring_completed_fence()), so neither the list head
+ * nor memptr + 1 is reliably the submit the GPU is on.
+ */
+static struct msm_gem_submit *
+find_pending_submit(struct msm_ringbuffer *ring)
+{
+	struct msm_gem_submit *submit, *pending = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ring->submit_lock, flags);
 	list_for_each_entry(submit, &ring->submits, node) {
-		if (submit->seqno == fence) {
-			spin_unlock_irqrestore(&ring->submit_lock, flags);
-			return submit;
+		if (!dma_fence_test_signaled_flag(submit->hw_fence) &&
+		    !msm_fence_completed(ring->fctx, submit->seqno)) {
+			pending = submit;
+			break;
 		}
 	}
 	spin_unlock_irqrestore(&ring->submit_lock, flags);
 
-	return NULL;
+	return pending;
 }
 
-static void retire_submits(struct msm_gpu *gpu);
+static bool gpu_has_pending_submits(struct msm_gpu *gpu)
+{
+	int i;
+
+	for (i = 0; i < gpu->nr_rings; i++)
+		if (find_pending_submit(gpu->rb[i]))
+			return true;
+
+	return false;
+}
+
+/*
+ * The ring to blame for a hang: the ring the CP is on if it has work left,
+ * else the highest priority ring with work left (a ring the CP never switched
+ * to), else the ring the CP is on.
+ */
+static struct msm_ringbuffer *find_hung_ring(struct msm_gpu *gpu)
+{
+	struct msm_ringbuffer *cur_ring = gpu->funcs->active_ring(gpu);
+	int i;
+
+	if (find_pending_submit(cur_ring))
+		return cur_ring;
+
+	for (i = 0; i < gpu->nr_rings; i++)
+		if (find_pending_submit(gpu->rb[i]))
+			return gpu->rb[i];
+
+	return cur_ring;
+}
 
 static void get_comm_cmdline(struct msm_gem_submit *submit, char **comm, char **cmd)
 {
@@ -466,57 +534,112 @@ static void recover_worker(struct kthread_work *work)
 	struct drm_device *dev = gpu->dev;
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_gem_submit *submit;
-	struct msm_ringbuffer *cur_ring = gpu->funcs->active_ring(gpu);
+	struct msm_ringbuffer *cur_ring, *hung_ring;
+	bool memptr_ahead[MSM_GPU_MAX_RINGS];
 	char *comm = NULL, *cmd = NULL;
 	struct task_struct *task;
+	unsigned int reasons;
 	int i;
 
 	mutex_lock(&gpu->lock);
 
-	DRM_DEV_ERROR(dev->dev, "%s: hangcheck recover!\n", gpu->name);
+	/*
+	 * Nothing judges the rings while we reset and replay them: a check
+	 * between the replay and the re-arm below would see the replayed
+	 * rings without progress and blame them.
+	 */
+	timer_delete_sync(&gpu->hangcheck_timer);
 
-	submit = find_submit(cur_ring, cur_ring->memptrs->fence + 1);
+	/*
+	 * A hung GPU keeps reporting the same fault (the hang detector fires
+	 * every few ms) while we are busy recovering from it, which queues
+	 * this work once more.  That run finds no reason left and bails, as
+	 * the GPU it would reset is the one the previous run just reset.
+	 */
+	reasons = atomic_xchg(&gpu->recover_reasons, 0);
+	if (!reasons)
+		goto out_unlock;
+
+	cur_ring = gpu->funcs->active_ring(gpu);
+	hung_ring = find_hung_ring(gpu);
+	submit = find_pending_submit(hung_ring);
+
+	/*
+	 * A ring the CP is not on has not run its pending submits.  Blame its
+	 * oldest one only when the hangcheck found it stuck (the CP never
+	 * switched to it: replaying alone could repeat that forever).  After
+	 * a hardware fault (a failed or timed out preemption, a CP error on
+	 * an idle ring) none of them did anything wrong; reset and replay.
+	 */
+	if (submit && hung_ring != cur_ring &&
+	    !(reasons & MSM_GPU_RECOVER_HANG))
+		submit = NULL;
 
 	/*
 	 * If the submit retired while we were waiting for the worker to run,
-	 * or waiting to acquire the gpu lock, then nothing more to do.
+	 * or waiting to acquire the gpu lock, and the hardware did not report
+	 * a fault, then nothing more to do.  After a fault the GPU is wedged
+	 * whether or not a submit is left to blame (the CP can fault in the
+	 * tail of a submit after writing its fence, or in stale ring
+	 * contents), so it gets reset either way.
 	 */
-	if (!submit)
+	if (!submit && !(reasons & MSM_GPU_RECOVER_HW_FAULT))
 		goto out_unlock;
 
-	/* Increment the fault counts */
-	submit->queue->faults++;
+	DRM_DEV_ERROR(dev->dev, "%s: hangcheck recover!\n", gpu->name);
 
-	task = get_pid_task(submit->pid, PIDTYPE_PID);
-	if (!task)
-		gpu->global_faults++;
-	else {
-		struct msm_gem_vm *vm = to_msm_vm(submit->vm);
-
-		vm->faults++;
-
-		/*
-		 * If userspace has opted-in to VM_BIND (and therefore userspace
-		 * management of the VM), faults mark the VM as unusable. This
-		 * matches vulkan expectations (vulkan is the main target for
-		 * VM_BIND).
-		 */
-		if (!vm->managed)
-			msm_gem_vm_unusable(submit->vm);
+	if (submit && submit->seqno != hung_ring->memptrs->fence + 1) {
+		DRM_DEV_ERROR(dev->dev,
+			      "%s: rb %d: oldest pending submit %u does not follow fence memptr %u (completed fence %u, last submitted %u)\n",
+			      gpu->name, hung_ring->id, submit->seqno,
+			      hung_ring->memptrs->fence,
+			      hung_ring->fctx->completed_fence,
+			      hung_ring->fctx->last_fence);
 	}
 
-	get_comm_cmdline(submit, &comm, &cmd);
+	if (submit) {
+		/* Increment the fault counts */
+		submit->queue->faults++;
 
-	if (comm && cmd) {
-		DRM_DEV_ERROR(dev->dev, "%s: offending task: %s (%s)\n",
-			      gpu->name, comm, cmd);
+		task = get_pid_task(submit->pid, PIDTYPE_PID);
+		if (!task)
+			gpu->global_faults++;
+		else {
+			struct msm_gem_vm *vm = to_msm_vm(submit->vm);
 
-		msm_rd_dump_submit(priv->hangrd, submit,
-				   "offending task: %s (%s)", comm, cmd);
+			vm->faults++;
+
+			/*
+			 * If userspace has opted-in to VM_BIND (and therefore
+			 * userspace management of the VM), faults mark the VM
+			 * as unusable. This matches vulkan expectations (vulkan
+			 * is the main target for VM_BIND).
+			 */
+			if (!vm->managed)
+				msm_gem_vm_unusable(submit->vm);
+
+			put_task_struct(task);
+		}
 	} else {
-		DRM_DEV_ERROR(dev->dev, "%s: offending task: unknown\n", gpu->name);
+		gpu->global_faults++;
+		DRM_DEV_ERROR(dev->dev, "%s: hardware fault, no submit to blame, resetting\n",
+			      gpu->name);
+	}
 
-		msm_rd_dump_submit(priv->hangrd, submit, NULL);
+	if (submit) {
+		get_comm_cmdline(submit, &comm, &cmd);
+
+		if (comm && cmd) {
+			DRM_DEV_ERROR(dev->dev, "%s: offending task: %s (%s)\n",
+				      gpu->name, comm, cmd);
+
+			msm_rd_dump_submit(priv->hangrd, submit,
+					   "offending task: %s (%s)", comm, cmd);
+		} else {
+			DRM_DEV_ERROR(dev->dev, "%s: offending task: unknown\n", gpu->name);
+
+			msm_rd_dump_submit(priv->hangrd, submit, NULL);
+		}
 	}
 
 	/* Record the crash state */
@@ -527,29 +650,61 @@ static void recover_worker(struct kthread_work *work)
 	kfree(comm);
 
 	/*
-	 * Update all the rings with the latest and greatest fence.. this
-	 * needs to happen after msm_rd_dump_submit() to ensure that the
-	 * bo's referenced by the offending submit are still around.
+	 * A memptr ahead of the last fence we handed out was not written by
+	 * our submits.  adreno_hw_init() turns it into last_fence, which would
+	 * complete every pending submit on the ring; note it before the reset.
 	 */
 	for (i = 0; i < gpu->nr_rings; i++) {
 		struct msm_ringbuffer *ring = gpu->rb[i];
 
-		uint32_t fence = ring->memptrs->fence;
+		memptr_ahead[i] = fence_after(ring->memptrs->fence,
+					      ring->fctx->last_fence);
+	}
+
+	/*
+	 * Reset first: until then the GPU may still be executing the hung
+	 * submit (a slow one the hangcheck gave up on) and writing fences, so
+	 * no fence may signal on its account before the GPU has stopped.
+	 */
+	gpu->funcs->recover(gpu);
+
+	/*
+	 * Update all the rings with the latest and greatest fence.. this
+	 * needs to happen after msm_rd_dump_submit() to ensure that the
+	 * bo's referenced by the offending submit are still around.  The
+	 * memptr can no longer move, the GPU is reset.
+	 */
+	for (i = 0; i < gpu->nr_rings; i++) {
+		struct msm_ringbuffer *ring = gpu->rb[i];
+		uint32_t fence;
+
+		if (memptr_ahead[i])
+			fence = ring->fctx->completed_fence;
+		else
+			fence = ring_completed_fence(ring);
 
 		/*
-		 * For the current (faulting?) ring/submit advance the fence by
-		 * one more to clear the faulting submit
+		 * For the hung ring advance the fence past the offending
+		 * submit to clear it.  Never move it backwards: a fence that
+		 * was seen signalled stays signalled.
 		 */
-		if (ring == cur_ring)
-			ring->memptrs->fence = ++fence;
+		if (ring == hung_ring && submit && fence_before(fence, submit->seqno))
+			fence = submit->seqno;
 
+		ring->memptrs->fence = fence;
+		/* readers check completed_fence first, then the memptr */
+		smp_wmb();
 		msm_update_fence(ring->fctx, fence);
+
+		ring->hangcheck_fence = fence;
+		ring->hangcheck_progress_retries = 0;
 	}
+
+	/* Faults reported up to here were the ones the reset just ended */
+	atomic_set(&gpu->recover_reasons, 0);
 
 	/* retire completed submits, plus the one that hung: */
 	retire_submits(gpu);
-
-	gpu->funcs->recover(gpu);
 
 	/*
 	 * Replay all remaining submits starting with highest priority
@@ -575,6 +730,14 @@ static void recover_worker(struct kthread_work *work)
 	pm_runtime_put(&gpu->pdev->dev);
 
 out_unlock:
+	/*
+	 * The timer was stopped above (and by the hardware fault paths); the
+	 * replayed submits are watched by nothing else until userspace submits
+	 * again.  A full period from now, the hangcheck state was reset above.
+	 */
+	if (gpu_has_pending_submits(gpu))
+		hangcheck_timer_reset(gpu);
+
 	mutex_unlock(&gpu->lock);
 
 	msm_gpu_retire(gpu);
@@ -588,7 +751,7 @@ void msm_gpu_fault_crashstate_capture(struct msm_gpu *gpu, struct msm_gpu_fault_
 
 	mutex_lock(&gpu->lock);
 
-	submit = find_submit(cur_ring, cur_ring->memptrs->fence + 1);
+	submit = find_pending_submit(cur_ring);
 	if (submit && submit->fault_dumped)
 		goto resume_smmu;
 
@@ -659,7 +822,7 @@ static void hangcheck_handler(struct timer_list *t)
 		DRM_DEV_ERROR(dev->dev, "%s:     submitted fence: %u\n",
 				gpu->name, ring->fctx->last_fence);
 
-		kthread_queue_work(gpu->worker, &gpu->recover_work);
+		msm_gpu_recover(gpu, MSM_GPU_RECOVER_HANG);
 	}
 
 	/* if still more pending work, reset the hangcheck timer: */

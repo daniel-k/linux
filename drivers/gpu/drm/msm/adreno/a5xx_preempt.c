@@ -102,7 +102,7 @@ static void a5xx_preempt_timer(struct timer_list *t)
 		return;
 
 	DRM_DEV_ERROR(dev->dev, "%s: preemption timed out\n", gpu->name);
-	kthread_queue_work(gpu->worker, &gpu->recover_work);
+	msm_gpu_hw_fault(gpu);
 }
 
 /* Try to trigger a preemption switch */
@@ -210,7 +210,7 @@ void a5xx_preempt_irq(struct msm_gpu *gpu)
 		set_preempt_state(a5xx_gpu, PREEMPT_FAULTED);
 		DRM_DEV_ERROR(dev->dev, "%s: Preemption failed to complete\n",
 			gpu->name);
-		kthread_queue_work(gpu->worker, &gpu->recover_work);
+		msm_gpu_hw_fault(gpu);
 		return;
 	}
 
@@ -240,6 +240,9 @@ void a5xx_preempt_hw_init(struct msm_gpu *gpu)
 	/* No preemption if we only have one ring */
 	if (gpu->nr_rings == 1)
 		return;
+
+	/* A preemption that was in flight when the GPU was reset is over */
+	timer_delete(&a5xx_gpu->preempt_timer);
 
 	for (i = 0; i < gpu->nr_rings; i++) {
 		a5xx_gpu->preempt[i]->data = 0;
