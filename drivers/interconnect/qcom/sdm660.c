@@ -1533,7 +1533,7 @@ static const struct regmap_config sdm660_bimc_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
-	.max_register	= 0x80000,
+	.max_register	= 0x77cfc,
 	.fast_io	= true,
 };
 
@@ -1543,6 +1543,14 @@ static const struct qcom_icc_desc sdm660_bimc = {
 	.num_nodes = ARRAY_SIZE(sdm660_bimc_nodes),
 	.bus_clk_desc = &bimc_clk,
 	.regmap_cfg = &sdm660_bimc_regmap_config,
+	/*
+	 * The first 0x300 bytes of the BIMC block are the CPU BWMON
+	 * monitor registers, so the DT region starts at BIMC + 0x300.
+	 * QPORT n's BKE registers (BIMC + 0x300 + 0x4000 * n) are then
+	 * at 0x4000 * n in our mapping; -0x300 cancels the 0x300 that
+	 * M_BKE_REG_BASE() adds. Same layout as MSM8998.
+	 */
+	.qos_offset = -0x300,
 	.ab_coeff = 153,
 	.keep_alive = true,
 };

@@ -619,9 +619,9 @@
 			clock-names = "core";
 		};
 
-		bimc: interconnect@1008000 {
+		bimc: interconnect@1008300 {
 			compatible = "qcom,sdm660-bimc";
-			reg = <0x01008000 0x78000>;
+			reg = <0x01008300 0x77d00>;
 			#interconnect-cells = <2>;
 		};
 
