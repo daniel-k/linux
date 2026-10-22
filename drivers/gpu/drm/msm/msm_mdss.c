@@ -371,9 +371,9 @@ static int msm_mdss_reset(struct device *dev)
 }
 
 /*
- * MDP5 MDSS uses at most three specified clocks.
+ * MDP5 MDSS uses at most four specified clocks.
  */
-#define MDP5_MDSS_NUM_CLOCKS 3
+#define MDP5_MDSS_NUM_CLOCKS 4
 static int mdp5_mdss_parse_clock(struct platform_device *pdev, struct clk_bulk_data **clocks)
 {
 	struct clk_bulk_data *bulk;
@@ -387,6 +387,20 @@ static int mdp5_mdss_parse_clock(struct platform_device *pdev, struct clk_bulk_d
 	if (!bulk)
 		return -ENOMEM;
 
+	/*
+	 * Keep the MMSS NoC AHB clock running whenever the MDSS AHB branch is
+	 * switched, as the SDM660 downstream kernel does: mdss_mdp_clk_ctrl()
+	 * enables mnoc_clk before iface_clk and disables it after (HiBy RS6
+	 * 1.80 kernel, mdss_mdp_clk_ctrl @ ffffff800840a620; clock slots 5
+	 * and 0 per mdss_mdp_probe @ ffffff800840cce8), and dsi_core_clk_start
+	 * and dsi_core_clk_stop (@ ffffff8008472cac, ffffff8008472f14) nest
+	 * the DSI's iface vote inside its mnoc vote the same way. Without it
+	 * nothing holds MNOC AHB when the last MDSS AHB disable runs in system
+	 * suspend (the MMSS SMMU may be suspended already), and that disable timed out waiting for CLK_OFF
+	 * ("status stuck at 'on'"). clk_bulk enables in array order and
+	 * disables in reverse, so listing it first brackets "iface".
+	 */
+	bulk[num_clocks++].id = "mnoc";
 	bulk[num_clocks++].id = "iface";
 	bulk[num_clocks++].id = "bus";
 	bulk[num_clocks++].id = "vsync";
