@@ -10,6 +10,7 @@
 #include <dt-bindings/clock/qcom,mmcc-sdm660.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
 #include <dt-bindings/firmware/qcom,scm.h>
+#include <dt-bindings/interconnect/qcom,rpm-icc.h>
 #include <dt-bindings/interconnect/qcom,sdm660.h>
 #include <dt-bindings/power/qcom-rpmpd.h>
 #include <dt-bindings/gpio/gpio.h>
@@ -621,7 +622,7 @@
 		bimc: interconnect@1008000 {
 			compatible = "qcom,sdm660-bimc";
 			reg = <0x01008000 0x78000>;
-			#interconnect-cells = <1>;
+			#interconnect-cells = <2>;
 		};
 
 		restart@10ac000 {
@@ -632,13 +633,13 @@
 		cnoc: interconnect@1500000 {
 			compatible = "qcom,sdm660-cnoc";
 			reg = <0x01500000 0x10000>;
-			#interconnect-cells = <1>;
+			#interconnect-cells = <2>;
 		};
 
 		snoc: interconnect@1626000 {
 			compatible = "qcom,sdm660-snoc";
 			reg = <0x01626000 0x7090>;
-			#interconnect-cells = <1>;
+			#interconnect-cells = <2>;
 		};
 
 		anoc2_smmu: iommu@16c0000 {
@@ -685,7 +686,7 @@
 		a2noc: interconnect@1704000 {
 			compatible = "qcom,sdm660-a2noc";
 			reg = <0x01704000 0xc100>;
-			#interconnect-cells = <1>;
+			#interconnect-cells = <2>;
 			clock-names = "ipa",
 				      "ufs_axi",
 				      "aggre2_ufs_axi",
@@ -701,7 +702,7 @@
 		mnoc: interconnect@1745000 {
 			compatible = "qcom,sdm660-mnoc";
 			reg = <0x01745000 0xa010>;
-			#interconnect-cells = <1>;
+			#interconnect-cells = <2>;
 			clock-names = "iface";
 			clocks = <&mmcc AHB_CLK_SRC>;
 		};
@@ -1124,7 +1125,8 @@
 			nvmem-cells = <&gpu_speed_bin>;
 			nvmem-cell-names = "speed_bin";
 
-			interconnects = <&bimc MASTER_OXILI &bimc SLAVE_EBI>;
+			interconnects = <&bimc MASTER_OXILI RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 			interconnect-names = "gfx-mem";
 
 			operating-points-v2 = <&gpu_sdm630_opp_table>;
@@ -1446,8 +1448,10 @@
 
 			resets = <&gcc GCC_SDCC2_BCR>;
 
-			interconnects = <&a2noc 3 &a2noc 10>,
-					<&gnoc 0 &cnoc 28>;
+			interconnects = <&a2noc 3 RPM_ALWAYS_TAG
+					 &a2noc 10 RPM_ALWAYS_TAG>,
+					<&gnoc 0 RPM_ALWAYS_TAG
+					 &cnoc 28 RPM_ALWAYS_TAG>;
 			interconnect-names = "sdhc-ddr","cpu-sdhc";
 			operating-points-v2 = <&sdhc2_opp_table>;
 
@@ -1501,8 +1505,10 @@
 
 			resets = <&gcc GCC_SDCC1_BCR>;
 
-			interconnects = <&a2noc 2 &a2noc 10>,
-					<&gnoc 0 &cnoc 27>;
+			interconnects = <&a2noc 2 RPM_ALWAYS_TAG
+					 &a2noc 10 RPM_ALWAYS_TAG>,
+					<&gnoc 0 RPM_ALWAYS_TAG
+					 &cnoc 27 RPM_ALWAYS_TAG>;
 			interconnect-names = "sdhc-ddr", "cpu-sdhc";
 			operating-points-v2 = <&sdhc1_opp_table>;
 			pinctrl-names = "default", "sleep";
@@ -1663,9 +1669,12 @@
 					      "core",
 					      "vsync";
 
-				interconnects = <&mnoc 2 &bimc 5>,
-						<&mnoc 3 &bimc 5>,
-						<&gnoc 0 &mnoc 17>;
+				interconnects = <&mnoc 2 RPM_ALWAYS_TAG
+						 &bimc 5 RPM_ALWAYS_TAG>,
+						<&mnoc 3 RPM_ALWAYS_TAG
+						 &bimc 5 RPM_ALWAYS_TAG>,
+						<&gnoc 0 RPM_ALWAYS_TAG
+						 &mnoc 17 RPM_ALWAYS_TAG>;
 				interconnect-names = "mdp0-mem",
 						     "mdp1-mem",
 						     "rotator-mem";
@@ -1847,7 +1856,8 @@
 			dmas = <&blsp1_dma 4>, <&blsp1_dma 5>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_1 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_1 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c1_default>;
@@ -1869,7 +1879,8 @@
 			dmas = <&blsp1_dma 6>, <&blsp1_dma 7>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_1 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_1 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c2_default>;
@@ -1891,7 +1902,8 @@
 			dmas = <&blsp1_dma 8>, <&blsp1_dma 9>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_1 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_1 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c3_default>;
@@ -1913,7 +1925,8 @@
 			dmas = <&blsp1_dma 10>, <&blsp1_dma 11>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_1 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_1 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c4_default>;
@@ -1963,7 +1976,8 @@
 			dmas = <&blsp2_dma 4>, <&blsp2_dma 5>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_2 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_2 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c5_default>;
@@ -1985,7 +1999,8 @@
 			dmas = <&blsp2_dma 6>, <&blsp2_dma 7>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_2 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_2 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c6_default>;
@@ -2007,7 +2022,8 @@
 			dmas = <&blsp2_dma 8>, <&blsp2_dma 9>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_2 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_2 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c7_default>;
@@ -2029,7 +2045,8 @@
 			dmas = <&blsp2_dma 8>, <&blsp2_dma 9>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_2 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_2 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&spi7_default>;
@@ -2051,7 +2068,8 @@
 			dmas = <&blsp2_dma 10>, <&blsp2_dma 11>;
 			dma-names = "tx", "rx";
 
-			interconnects = <&a2noc MASTER_BLSP_2 &bimc SLAVE_EBI>;
+			interconnects = <&a2noc MASTER_BLSP_2 RPM_ALWAYS_TAG
+					 &bimc SLAVE_EBI RPM_ALWAYS_TAG>;
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&i2c8_default>;
@@ -2210,7 +2228,8 @@
 				      "vfe1_stream",
 				      "vfe_ahb",
 				      "vfe_axi";
-			interconnects = <&mnoc 5 &bimc 5>;
+			interconnects = <&mnoc 5 RPM_ALWAYS_TAG
+					 &bimc 5 RPM_ALWAYS_TAG>;
 			interconnect-names = "vfe-mem";
 			iommus = <&mmss_smmu 0xc00>,
 				 <&mmss_smmu 0xc01>,
@@ -2273,8 +2292,10 @@
 				 <&mmcc VIDEO_AXI_CLK>,
 				 <&mmcc THROTTLE_VIDEO_AXI_CLK>;
 			clock-names = "core", "iface", "bus", "bus_throttle";
-			interconnects = <&gnoc 0 &mnoc 13>,
-					<&mnoc 4 &bimc 5>;
+			interconnects = <&gnoc 0 RPM_ALWAYS_TAG
+					 &mnoc 13 RPM_ALWAYS_TAG>,
+					<&mnoc 4 RPM_ALWAYS_TAG
+					 &bimc 5 RPM_ALWAYS_TAG>;
 			interconnect-names = "cpu-cfg", "video-mem";
 			interrupts = <GIC_SPI 287 IRQ_TYPE_LEVEL_HIGH>;
 			iommus = <&mmss_smmu 0x400>,
@@ -2581,7 +2602,7 @@
 		gnoc: interconnect@17900000 {
 			compatible = "qcom,sdm660-gnoc";
 			reg = <0x17900000 0xe000>;
-			#interconnect-cells = <1>;
+			#interconnect-cells = <2>;
 		};
 
 		apcs_glb: mailbox@17911000 {
