@@ -619,6 +619,72 @@
 			clock-names = "core";
 		};
 
+		pmu@1008000 {
+			compatible = "qcom,sdm660-cpu-bwmon", "qcom,msm8998-bwmon";
+			reg = <0x01008000 0x300>, <0x01001000 0x200>;
+			reg-names = "monitor", "global";
+			interrupts = <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>;
+
+			operating-points-v2 = <&cpu_bwmon_opp_table>;
+			interconnects = <&gnoc MASTER_APSS_PROC RPM_ACTIVE_TAG
+					 &bimc SLAVE_EBI RPM_ACTIVE_TAG>;
+
+			/*
+			 * Downstream cpubw bw-tbl in MiB/s, from the 762 MiB/s
+			 * (200 MHz) min_freq its init script sets for SDM660.
+			 * Downstream votes MiB/s * 2^20 B/s over the 4-byte EBI,
+			 * so the same peak in kB/s asks the RPM for the same
+			 * BIMC rate.
+			 */
+			cpu_bwmon_opp_table: opp-table {
+				compatible = "operating-points-v2";
+
+				opp-0 {
+					opp-peak-kBps = <(762 * 1048576 / 1000)>;
+				};
+
+				opp-1 {
+					opp-peak-kBps = <(1144 * 1048576 / 1000)>;
+				};
+
+				opp-2 {
+					opp-peak-kBps = <(1571 * 1048576 / 1000)>;
+				};
+
+				opp-3 {
+					opp-peak-kBps = <(2086 * 1048576 / 1000)>;
+				};
+
+				opp-4 {
+					opp-peak-kBps = <(2597 * 1048576 / 1000)>;
+				};
+
+				opp-5 {
+					opp-peak-kBps = <(2929 * 1048576 / 1000)>;
+				};
+
+				opp-6 {
+					opp-peak-kBps = <(3879 * 1048576 / 1000)>;
+				};
+
+				opp-7 {
+					opp-peak-kBps = <(4943 * 1048576 / 1000)>;
+				};
+
+				opp-8 {
+					opp-peak-kBps = <(5163 * 1048576 / 1000)>;
+				};
+
+				opp-9 {
+					opp-peak-kBps = <(5931 * 1048576 / 1000)>;
+				};
+
+				opp-10 {
+					opp-peak-kBps = <(6881 * 1048576 / 1000)>;
+				};
+			};
+		};
+
 		bimc: interconnect@1008300 {
 			compatible = "qcom,sdm660-bimc";
 			reg = <0x01008300 0x77d00>;
