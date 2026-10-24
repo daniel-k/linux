@@ -186,6 +186,9 @@
 #define CPRH_CORNER_RO_SEL_SHIFT		25
 #define CPRH_CORNER_CPR_CL_DISABLE		BIT(29)
 
+#define CPRH_STATUS_CORNER			GENMASK(5, 0)
+#define CPRH_STATUS_LAST_VOLT			GENMASK(17, 6)
+
 #define CPRH_CORNER_INIT_VOLTAGE_MAX_VALUE	255
 #define CPRH_CORNER_FLOOR_VOLTAGE_MAX_VALUE	255
 #define CPRH_CORNER_QUOT_DELTA_MAX_VALUE	511
@@ -2948,6 +2951,7 @@ static int cpr3_debug_info_show(struct seq_file *s, void *unused)
 	struct cpr_thread *thread = s->private;
 	struct corner *corner = thread->corners;
 	struct fuse_corner *fuse = thread->fuse_corners;
+	u8 tid = thread->desc->hw_tid;
 	unsigned int i;
 
 	const struct {
@@ -2988,6 +2992,13 @@ static int cpr3_debug_info_show(struct seq_file *s, void *unused)
 	irq_status = cpr_read(thread, CPR3_REG_IRQ_STATUS);
 	seq_printf(s, "irq_status = %#02X\n", irq_status);
 
+	if (thread->drv->desc->cpr_type == CTRL_TYPE_CPRH) {
+		reg = cpr_read(thread, thread->drv->reg_status);
+		seq_printf(s, "cprh_status = %#X [corner = %lu, last_volt = %lu mV]\n",
+			   reg, FIELD_GET(CPRH_STATUS_CORNER, reg),
+			   FIELD_GET(CPRH_STATUS_LAST_VOLT, reg));
+	}
+
 	ctl = cpr_read(thread, CPR3_REG_CPR_CTL);
 	seq_printf(s, "cpr_ctl = %#02X\n", ctl);
 
@@ -3004,15 +3015,21 @@ static int cpr3_debug_info_show(struct seq_file *s, void *unused)
 	for (i = 0; i < thread->desc->num_fuse_corners; i++, fuse++)
 		seq_printf(s, "fuse %d - uV=[%d %d %d] quot=%d freq=%lu\n",
 			   i, fuse->min_uV, fuse->uV, fuse->max_uV,
-			   fuse->quot, corner->freq);
+			   fuse->quot, fuse->max_freq);
 
-	seq_printf(s, "requested voltage: %d uV\n", thread->corner->last_uV);
+	/* Unset until software switches corners, which CPRh leaves to hardware */
+	if (thread->corner) {
+		seq_printf(s, "requested voltage: %d uV\n",
+			   thread->corner->last_uV);
+		ro_sel = thread->corner->fuse_corner->ring_osc_idx;
+	} else {
+		ro_sel = thread->fuse_corners[0].ring_osc_idx;
+	}
 
-	ro_sel = corner->fuse_corner->ring_osc_idx;
-	quot = cpr_read(thread, CPR3_REG_TARGET_QUOT(i, ro_sel));
+	quot = cpr_read(thread, CPR3_REG_TARGET_QUOT(tid, ro_sel));
 	seq_printf(s, "quot_target (%u) = %#02X\n", ro_sel, quot);
 
-	reg = cpr_read(thread, CPR3_REG_RESULT0(i));
+	reg = cpr_read(thread, CPR3_REG_RESULT0(tid));
 	seq_printf(s, "cpr_result_0 = %#02X\n  [", reg);
 	for (i = 0; i < ARRAY_SIZE(result0_fields); i++)
 		seq_printf(s, "%s%s = %u",
@@ -3021,7 +3038,7 @@ static int cpr3_debug_info_show(struct seq_file *s, void *unused)
 			   (reg >> result0_fields[i].shift) &
 				result0_fields[i].mask);
 	seq_puts(s, "]\n");
-	reg = cpr_read(thread, CPR3_REG_RESULT1(i));
+	reg = cpr_read(thread, CPR3_REG_RESULT1(tid));
 	seq_printf(s, "cpr_result_1 = %#02X\n  [", reg);
 	for (i = 0; i < ARRAY_SIZE(result1_fields); i++)
 		seq_printf(s, "%s%s = %u",
@@ -3030,7 +3047,7 @@ static int cpr3_debug_info_show(struct seq_file *s, void *unused)
 			   (reg >> result1_fields[i].shift) &
 				result1_fields[i].mask);
 	seq_puts(s, "]\n");
-	reg = cpr_read(thread, CPR3_REG_RESULT2(i));
+	reg = cpr_read(thread, CPR3_REG_RESULT2(tid));
 	seq_printf(s, "cpr_result_2 = %#02X\n  [", reg);
 	for (i = 0; i < ARRAY_SIZE(result2_fields); i++)
 		seq_printf(s, "%s%s = %u",
