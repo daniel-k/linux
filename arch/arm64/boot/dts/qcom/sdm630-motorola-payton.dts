@@ -350,9 +350,10 @@
 			regulator-enable-ramp-delay = <250>;
 		};
 
+		/* WCN3990 CX/MX: fixed at 848 mV, as in the vendor kernel. */
 		vreg_l5a_0p848: l5 {
-			regulator-min-microvolt = <525000>;
-			regulator-max-microvolt = <950000>;
+			regulator-min-microvolt = <848000>;
+			regulator-max-microvolt = <848000>;
 			regulator-enable-ramp-delay = <250>;
 		};
 
