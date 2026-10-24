@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * SDM630 CPU DVFS: the CPR-Hardened (KBSS) voltage controllers and the
+ * SDM630 DVFS. CPU: the CPR-Hardened (KBSS) voltage controllers and the
  * Operating State Manager, both programmed by the OS since the boot chain
  * leaves them empty.
  *
@@ -21,6 +21,61 @@
  * <2 4 6 9 10>. The stock open-loop corner voltages come out of the fuses
  * unchanged with the sdm630_cpr_desc reference voltages and adjustments.
  */
+
+/*
+ * GPU: the A508 core runs from VDD_CX (the stock GFX CPR4 rail is a stub
+ * regulator, its GFX LDO stays in bypass), so every OPP votes CX next to MX.
+ * CX levels are the stock gpucc qcom,gfxfreq-corner map (160/240/370/465/
+ * 588/647/700 MHz -> GFX corner 1-7) through the GFX CPR4
+ * qcom,system-voltage per corner (LOW_SVS LOW_SVS SVS SVS_L1 NOM NOM_L1
+ * TURBO); MX keeps the levels of the SoC table.
+ */
+&adreno_gpu {
+	power-domains = <&rpmpd RPMPD_VDDCX>, <&rpmpd RPMPD_VDDMX>;
+	power-domain-names = "cx", "mx";
+};
+
+&gpu_sdm630_opp_table {
+	opp-700000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_turbo>, <&rpmpd_opp_turbo>;
+	};
+
+	opp-647000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_nom_plus>, <&rpmpd_opp_nom_plus>;
+	};
+
+	opp-588000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_nom>, <&rpmpd_opp_nom>;
+	};
+
+	opp-465000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_svs_plus>, <&rpmpd_opp_svs_plus>;
+	};
+
+	opp-370000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_svs>, <&rpmpd_opp_svs>;
+	};
+
+	opp-240000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_low_svs>, <&rpmpd_opp_low_svs>;
+	};
+
+	opp-160000000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_low_svs>, <&rpmpd_opp_min_svs>;
+	};
+
+	opp-19200000 {
+		/delete-property/ opp-level;
+		required-opps = <&rpmpd_opp_min_svs>, <&rpmpd_opp_min_svs>;
+	};
+};
 
 &qfprom {
 	/* speed bin: row 38 bits 29-31 */
