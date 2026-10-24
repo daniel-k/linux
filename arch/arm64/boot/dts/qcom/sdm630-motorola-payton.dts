@@ -13,6 +13,9 @@
 #include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 
+/* The SoC default at 0xfed00000 lies past the end of payton's 3 GiB of RAM. */
+/delete-node/ &zap_shader_region;
+
 / {
 	model = "Motorola Moto X4";
 	compatible = "motorola,payton", "qcom,sdm630";
@@ -103,6 +106,12 @@
 			no-map;
 		};
 
+		zap_shader_region: gpu@f4000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0xf4000000 0x0 0xa00000>;
+			no-map;
+		};
+
 		/*
 		 * The stock kernel reserves 0xc0000 here but packs its single
 		 * dmesg record at 0x3f800; the 0x800 smaller size gives the
@@ -125,6 +134,23 @@
 
 		regulator-always-on;
 		regulator-boot-on;
+	};
+};
+
+&adreno_gpu_zap {
+	firmware-name = "a508_zap.mdt";
+};
+
+&blsp2_uart1 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,wcn3990-bt";
+		vddxo-supply = <&vreg_l9a_1p8>;
+		vddrf-supply = <&vreg_l6a_1p3>;
+		vddch0-supply = <&vreg_l19a_3p3>;
+		vddio-supply = <&vreg_l13a_1p8>;
+		max-speed = <3200000>;
 	};
 };
 
