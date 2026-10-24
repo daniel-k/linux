@@ -29,6 +29,16 @@
 			<0x42 0x82a0>,
 			<0x42 0x82b0>;
 
+	/*
+	 * eMMC as mmcblk0, like on the stock kernel: qbootctl only treats
+	 * /dev/mmcblk0 as eMMC and otherwise wants a UFS boot-LUN switch.
+	 */
+	aliases {
+		mmc0 = &sdhc_1;
+		mmc1 = &sdhc_2;
+		/delete-property/ mmc2;
+	};
+
 	battery: battery {
 		compatible = "simple-battery";
 
