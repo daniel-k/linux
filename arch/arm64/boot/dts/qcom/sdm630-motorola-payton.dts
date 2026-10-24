@@ -147,6 +147,23 @@
 	};
 };
 
+&adreno_gpu {
+	status = "okay";
+};
+
+/*
+ * The A508 core runs from VDD_CX, but the GPU only votes VDD_MX for its
+ * OPPs; CX stays at the SVS level the display asks for. The vendor map
+ * needs SVS_PLUS from 465 MHz up: there the GPU hangs under load, and at
+ * 700 MHz the SoC resets. Cap at 370 MHz until the GPU votes CX too.
+ */
+&gpu_sdm630_opp_table {
+	/delete-node/ opp-700000000;
+	/delete-node/ opp-647000000;
+	/delete-node/ opp-588000000;
+	/delete-node/ opp-465000000;
+};
+
 &adreno_gpu_zap {
 	firmware-name = "a508_zap.mdt";
 };
