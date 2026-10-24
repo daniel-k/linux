@@ -147,6 +147,28 @@
 	};
 };
 
+/*
+ * There is no CPU frequency scaling on SDM630 yet, so the clusters keep the
+ * bootloader's clocks: measured ~1.67 GHz on cpu0-3 and ~600 MHz on cpu4-7.
+ * Scale the capacities to match (1126 * 0.6 / 1.67 ~= 405), so the
+ * scheduler puts demanding tasks on the fast cluster.
+ */
+&cpu4 {
+	capacity-dmips-mhz = <405>;
+};
+
+&cpu5 {
+	capacity-dmips-mhz = <405>;
+};
+
+&cpu6 {
+	capacity-dmips-mhz = <405>;
+};
+
+&cpu7 {
+	capacity-dmips-mhz = <405>;
+};
+
 &adreno_gpu {
 	status = "okay";
 };
