@@ -2553,6 +2553,13 @@
 			};
 		};
 
+		watchdog@17817000 {
+			compatible = "qcom,apss-wdt-sdm660", "qcom,kpss-wdt";
+			reg = <0x17817000 0x1000>;
+			clocks = <&sleep_clk>;
+			interrupts = <GIC_SPI 3 IRQ_TYPE_EDGE_RISING>;
+		};
+
 		gnoc: interconnect@17900000 {
 			compatible = "qcom,sdm660-gnoc";
 			reg = <0x17900000 0xe000>;
