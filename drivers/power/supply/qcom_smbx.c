@@ -602,12 +602,15 @@ static void smb_status_change_work(struct work_struct *work)
 static int smb_get_iio_chan(struct smb_chip *chip, struct iio_channel *chan,
 			     int *val)
 {
-	int rc;
-	union power_supply_propval status;
+	int rc, online;
 
-	rc = power_supply_get_property(chip->chg_psy, POWER_SUPPLY_PROP_STATUS,
-				       &status);
-	if (rc < 0 || status.intval != POWER_SUPPLY_STATUS_CHARGING) {
+	/*
+	 * The RRADC measures USBIN whenever VBUS is present, also while the
+	 * battery is full or charging is suspended and the input only feeds
+	 * the system.
+	 */
+	rc = smb_get_prop_usb_online(chip, &online);
+	if (rc < 0 || !online) {
 		*val = 0;
 		return 0;
 	}
