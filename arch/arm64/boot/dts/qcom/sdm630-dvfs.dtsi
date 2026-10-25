@@ -643,3 +643,54 @@
 	power-domain-names = "cpr";
 	qcom,freq-domain = <&cpufreq_hw 0>;
 };
+
+/*
+ * CPU throttling: the passive trips of sdm630.dtsi have no cooling device,
+ * so nothing slowed the CPUs before the critical trip. Each perf core's
+ * sensor and the power cluster's sensor throttle their cluster's cpufreq
+ * policy (step_wise).
+ */
+&{/thermal-zones/cpu0-thermal} {
+	cooling-maps {
+		map0 {
+			trip = <&cpu0_alert0>;
+			cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
+
+&{/thermal-zones/cpu1-thermal} {
+	cooling-maps {
+		map0 {
+			trip = <&cpu1_alert0>;
+			cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
+
+&{/thermal-zones/cpu2-thermal} {
+	cooling-maps {
+		map0 {
+			trip = <&cpu2_alert0>;
+			cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
+
+&{/thermal-zones/cpu3-thermal} {
+	cooling-maps {
+		map0 {
+			trip = <&cpu3_alert0>;
+			cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
+
+&{/thermal-zones/pwr-cluster-thermal} {
+	cooling-maps {
+		map0 {
+			trip = <&pwr_cluster_alert0>;
+			cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
