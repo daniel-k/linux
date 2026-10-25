@@ -1,0 +1,227 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * SDM630 CPU and cluster (L2) idle for PSCI OS-initiated mode.
+ * Include after sdm630-dvfs.dtsi: the CPU power-domains lists extend its
+ * "cpr" entries.
+ *
+ * The firmware composes the power_state the way the vendor lpm-levels
+ * driver does (psci_enter_sleep(), get_cluster_id()):
+ *
+ *   is_reset(CPU level) << 30 | affinity level << 24 | L2 mode << 4 | CPU mode
+ *
+ * CPU modes: 1 WFI, 2 retention, 3 power collapse. L2 modes: 2 dynamic
+ * retention, 3 retention, 4 power collapse. Only the last CPU of a cluster
+ * adds an L2 mode, raising the affinity level to 1. CPU retention is not a
+ * reset state, hence 0x00000002. sdm630.dtsi's flat cluster states
+ * (0x400000f2..f4, requested by any CPU) are not in that encoding and the
+ * firmware fails them at once, as it does 0x40000002.
+ *
+ * The L2 states hang off one PSCI domain per cluster, which genpd powers
+ * off only once every CPU of the cluster is in CPU power collapse; each
+ * carries the full request of that last CPU (CPU PC, affinity level 1,
+ * L2 mode).
+ *
+ * Timings come from the stock qcom,lpm-levels nodes:
+ *   exit-latency-us  = qcom,latency-us
+ *   entry-latency-us = qcom,time-overhead - qcom,latency-us
+ *   min-residency-us = one more than the shallower level's break-even
+ *                      residency, computed from qcom,ss-power,
+ *                      energy-overhead and time-overhead as the vendor
+ *                      driver does (set_optimum_cpu_residency())
+ *
+ * The system level (CCI, "system-pc", 0x42000343) needs the MPM to wake
+ * and RPM to be notified, and is not described.
+ */
+
+&pwr_cpu_sleep_0 {
+	arm,psci-suspend-param = <0x00000002>;
+	entry-latency-us = <163>;
+	exit-latency-us = <90>;
+	min-residency-us = <610>;
+};
+
+&pwr_cpu_sleep_1 {
+	entry-latency-us = <262>;
+	exit-latency-us = <343>;
+	min-residency-us = <1849>;
+};
+
+&perf_cpu_sleep_0 {
+	arm,psci-suspend-param = <0x00000002>;
+	entry-latency-us = <154>;
+	exit-latency-us = <87>;
+	min-residency-us = <498>;
+};
+
+&perf_cpu_sleep_1 {
+	entry-latency-us = <262>;
+	exit-latency-us = <301>;
+	min-residency-us = <2022>;
+};
+
+/delete-node/ &pwr_cluster_sleep_0;
+/delete-node/ &pwr_cluster_sleep_1;
+/delete-node/ &pwr_cluster_sleep_2;
+/delete-node/ &perf_cluster_sleep_0;
+/delete-node/ &perf_cluster_sleep_1;
+/delete-node/ &perf_cluster_sleep_2;
+
+&{/cpus} {
+	domain-idle-states {
+		pwr_l2_dynret: cluster-sleep-0-0 {
+			compatible = "domain-idle-state";
+			idle-state-name = "pwr-l2-dynret";
+			arm,psci-suspend-param = <0x41000023>;
+			entry-latency-us = <284>;
+			exit-latency-us = <384>;
+			min-residency-us = <984>;
+		};
+
+		pwr_l2_ret: cluster-sleep-0-1 {
+			compatible = "domain-idle-state";
+			idle-state-name = "pwr-l2-ret";
+			arm,psci-suspend-param = <0x41000033>;
+			entry-latency-us = <338>;
+			exit-latency-us = <423>;
+			min-residency-us = <1092>;
+		};
+
+		pwr_l2_pc: cluster-sleep-0-2 {
+			compatible = "domain-idle-state";
+			idle-state-name = "pwr-l2-pc";
+			arm,psci-suspend-param = <0x41000043>;
+			entry-latency-us = <515>;
+			exit-latency-us = <1821>;
+			min-residency-us = <6426>;
+		};
+
+		perf_l2_dynret: cluster-sleep-1-0 {
+			compatible = "domain-idle-state";
+			idle-state-name = "perf-l2-dynret";
+			arm,psci-suspend-param = <0x41000023>;
+			entry-latency-us = <272>;
+			exit-latency-us = <329>;
+			min-residency-us = <602>;
+		};
+
+		perf_l2_ret: cluster-sleep-1-1 {
+			compatible = "domain-idle-state";
+			idle-state-name = "perf-l2-ret";
+			arm,psci-suspend-param = <0x41000033>;
+			entry-latency-us = <332>;
+			exit-latency-us = <368>;
+			min-residency-us = <1463>;
+		};
+
+		perf_l2_pc: cluster-sleep-1-2 {
+			compatible = "domain-idle-state";
+			idle-state-name = "perf-l2-pc";
+			arm,psci-suspend-param = <0x41000043>;
+			entry-latency-us = <545>;
+			exit-latency-us = <1609>;
+			min-residency-us = <6145>;
+		};
+	};
+};
+
+&{/psci} {
+	/* cpu@100-103: performance cluster */
+	cpu_pd0: power-domain-cpu0 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd1>;
+	};
+
+	cpu_pd1: power-domain-cpu1 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd1>;
+	};
+
+	cpu_pd2: power-domain-cpu2 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd1>;
+	};
+
+	cpu_pd3: power-domain-cpu3 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd1>;
+	};
+
+	/* cpu@0-3: power cluster */
+	cpu_pd4: power-domain-cpu4 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd0>;
+	};
+
+	cpu_pd5: power-domain-cpu5 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd0>;
+	};
+
+	cpu_pd6: power-domain-cpu6 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd0>;
+	};
+
+	cpu_pd7: power-domain-cpu7 {
+		#power-domain-cells = <0>;
+		power-domains = <&cluster_pd0>;
+	};
+
+	cluster_pd0: power-domain-cluster0 {
+		#power-domain-cells = <0>;
+		domain-idle-states = <&pwr_l2_dynret>, <&pwr_l2_ret>, <&pwr_l2_pc>;
+	};
+
+	cluster_pd1: power-domain-cluster1 {
+		#power-domain-cells = <0>;
+		domain-idle-states = <&perf_l2_dynret>, <&perf_l2_ret>, <&perf_l2_pc>;
+	};
+};
+
+&cpu0 {
+	cpu-idle-states = <&perf_cpu_sleep_0>, <&perf_cpu_sleep_1>;
+	power-domains = <&apc_cprh 0>, <&cpu_pd0>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu1 {
+	cpu-idle-states = <&perf_cpu_sleep_0>, <&perf_cpu_sleep_1>;
+	power-domains = <&apc_cprh 0>, <&cpu_pd1>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu2 {
+	cpu-idle-states = <&perf_cpu_sleep_0>, <&perf_cpu_sleep_1>;
+	power-domains = <&apc_cprh 0>, <&cpu_pd2>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu3 {
+	cpu-idle-states = <&perf_cpu_sleep_0>, <&perf_cpu_sleep_1>;
+	power-domains = <&apc_cprh 0>, <&cpu_pd3>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu4 {
+	cpu-idle-states = <&pwr_cpu_sleep_0>, <&pwr_cpu_sleep_1>;
+	power-domains = <&apc_cprh 1>, <&cpu_pd4>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu5 {
+	cpu-idle-states = <&pwr_cpu_sleep_0>, <&pwr_cpu_sleep_1>;
+	power-domains = <&apc_cprh 1>, <&cpu_pd5>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu6 {
+	cpu-idle-states = <&pwr_cpu_sleep_0>, <&pwr_cpu_sleep_1>;
+	power-domains = <&apc_cprh 1>, <&cpu_pd6>;
+	power-domain-names = "cpr", "psci";
+};
+
+&cpu7 {
+	cpu-idle-states = <&pwr_cpu_sleep_0>, <&pwr_cpu_sleep_1>;
+	power-domains = <&apc_cprh 1>, <&cpu_pd7>;
+	power-domain-names = "cpr", "psci";
+};
