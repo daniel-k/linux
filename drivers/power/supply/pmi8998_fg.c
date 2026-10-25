@@ -316,16 +316,24 @@ static int pmi8998_fg_get_property(struct power_supply *psy,
 				   union power_supply_propval *val)
 {
 	struct pmi8998_fg_chip *chip = power_supply_get_drvdata(psy);
+	union power_supply_propval chg_status;
 	int temp, ret = 0;
 
 	dev_dbg(chip->dev, "Getting property: %d", psp);
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		/* Get status from charger if available */
+		/*
+		 * Ask the charger each time: it does not report every change
+		 * of its charge state (charging to full, for one), so a
+		 * status remembered from its last notification goes stale.
+		 */
 		if (chip->chg_psy &&
-		    chip->status != POWER_SUPPLY_STATUS_UNKNOWN) {
-			val->intval = chip->status;
+		    !power_supply_get_property(chip->chg_psy,
+					       POWER_SUPPLY_PROP_STATUS,
+					       &chg_status) &&
+		    chg_status.intval != POWER_SUPPLY_STATUS_UNKNOWN) {
+			val->intval = chg_status.intval;
 		} else {
 			/*
 			 * Fall back to capacity and current-based
@@ -522,10 +530,7 @@ static int pmi8998_fg_notifier_call(struct notifier_block *nb, unsigned long val
 	if (psy == chip->chg_psy) {
 		ret = power_supply_get_property(psy,
 						POWER_SUPPLY_PROP_STATUS, &propval);
-		if (ret)
-			chip->status = POWER_SUPPLY_STATUS_UNKNOWN;
-
-		chip->status = propval.intval;
+		chip->status = ret ? POWER_SUPPLY_STATUS_UNKNOWN : propval.intval;
 
 		power_supply_changed(chip->batt_psy);
 
