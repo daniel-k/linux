@@ -303,12 +303,34 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * Seconds the watchdog keeps running through a system suspend, 0 to stop it.
+ * A suspend that never resumes then resets the board, which makes suspend
+ * testable without anyone at the device. Capped at the hardware maximum, so
+ * a longer suspend needs a wakeup within that time.
+ */
+static unsigned int suspend_timeout;
+module_param(suspend_timeout, uint, 0644);
+MODULE_PARM_DESC(suspend_timeout,
+		 "Keep the watchdog running for this many seconds across suspend (0 = stop it)");
+
 static int __maybe_unused qcom_wdt_suspend(struct device *dev)
 {
 	struct qcom_wdt *wdt = dev_get_drvdata(dev);
+	unsigned int timeout = min(suspend_timeout, wdt->wdd.max_timeout);
 
-	if (watchdog_active(&wdt->wdd))
-		qcom_wdt_stop(&wdt->wdd);
+	if (!watchdog_active(&wdt->wdd))
+		return 0;
+
+	if (!timeout)
+		return qcom_wdt_stop(&wdt->wdd);
+
+	/* The bark interrupt is not a wakeup source: let the bite reset */
+	writel(0, wdt_addr(wdt, WDT_EN));
+	writel(1, wdt_addr(wdt, WDT_RST));
+	writel(timeout * wdt->rate, wdt_addr(wdt, WDT_BARK_TIME));
+	writel(timeout * wdt->rate, wdt_addr(wdt, WDT_BITE_TIME));
+	writel(QCOM_WDT_ENABLE, wdt_addr(wdt, WDT_EN));
 
 	return 0;
 }
