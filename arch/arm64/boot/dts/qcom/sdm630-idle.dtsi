@@ -29,8 +29,14 @@
  *                      energy-overhead and time-overhead as the vendor
  *                      driver does (set_optimum_cpu_residency())
  *
- * The system level (CCI, "system-pc", 0x42000343) needs the MPM to wake
- * and RPM to be notified, and is not described.
+ * The system level is the stock "system-pc" level: CCI power collapse,
+ * psci-mode 3 at shift 8 on top of CPU and L2 power collapse, affinity
+ * level 2: 0x42000343. Stock enters it only with both clusters in L2 power
+ * collapse (qcom,min-child-idx = 3), which genpd also gives: its residency
+ * is longer than either L2 power collapse. It has qcom,notify-rpm: the
+ * vMPM gets the next timer event and the wakeup interrupt setup, and RPM
+ * is kicked through the APCS IPC register. The MPM is the parent of the
+ * system domain and does that in its genpd power_off.
  */
 
 &pwr_cpu_sleep_0 {
@@ -121,6 +127,15 @@
 			exit-latency-us = <1609>;
 			min-residency-us = <6145>;
 		};
+
+		system_pc: domain-sleep-system {
+			compatible = "domain-idle-state";
+			idle-state-name = "system-pc";
+			arm,psci-suspend-param = <0x42000343>;
+			entry-latency-us = <10747>;
+			exit-latency-us = <4026>;
+			min-residency-us = <14774>;
+		};
 	};
 };
 
@@ -169,13 +184,75 @@
 
 	cluster_pd0: power-domain-cluster0 {
 		#power-domain-cells = <0>;
+		power-domains = <&system_pd>;
 		domain-idle-states = <&pwr_l2_dynret>, <&pwr_l2_ret>, <&pwr_l2_pc>;
 	};
 
 	cluster_pd1: power-domain-cluster1 {
 		#power-domain-cells = <0>;
+		power-domains = <&system_pd>;
 		domain-idle-states = <&perf_l2_dynret>, <&perf_l2_ret>, <&perf_l2_pc>;
 	};
+
+	system_pd: power-domain-system {
+		#power-domain-cells = <0>;
+		power-domains = <&mpm>;
+		domain-idle-states = <&system_pc>;
+	};
+};
+
+/*
+ * MPM wakeup interrupt controller, from the stock qcom,mpm@7781b8 node
+ * (qcom,mpm-v2): vMPM at 0x7781b8 in the RPM message RAM, IPC through APCS
+ * IPC bit 1, SPI 171 rising. qcom,gic-map pairs are <pin, SPI + 32>; the
+ * pins below carry the interrupts the mainline DT routes through the MPM.
+ * Stock also maps pins 49 (SPI 180, dwc3 pwr_event) and 79 (SPI 347, dwc3
+ * hs_phy); USB plug wakeup comes from the PM660 charger over SPMI instead.
+ * The GPIO map is pinctrl-sdm660.c's sdm660_mpm_map.
+ */
+/ {
+	mpm: interrupt-controller {
+		compatible = "qcom,mpm";
+		qcom,rpm-msg-ram = <&apss_mpm>;
+		interrupts = <GIC_SPI 171 IRQ_TYPE_EDGE_RISING>;
+		mboxes = <&apcs_glb 1>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		#power-domain-cells = <0>;
+		interrupt-parent = <&intc>;
+		qcom,mpm-pin-count = <96>;
+		qcom,mpm-pin-map = <2 184>,	/* tsens uplow */
+				   <52 243>,	/* dwc3 ss_phy_irq */
+				   <61 177>,	/* wcd9xxx-irq (lpass) */
+				   <87 326>,	/* SPMI periph_irq */
+				   <91 487>;
+	};
+};
+
+&rpm_msg_ram {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	ranges = <0 0x00778000 0x7000>;
+
+	apss_mpm: sram@1b8 {
+		reg = <0x1b8 0x48>;
+	};
+};
+
+/* PMIC interrupts (power key, volume keys, RTC alarm, charger) wake through the MPM */
+&spmi_bus {
+	/delete-property/ interrupts;
+	interrupts-extended = <&mpm 87 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&tlmm {
+	wakeup-parent = <&mpm>;
+};
+
+&tsens {
+	/delete-property/ interrupts;
+	interrupts-extended = <&mpm 2 IRQ_TYPE_LEVEL_HIGH>,
+			      <&intc GIC_SPI 430 IRQ_TYPE_LEVEL_HIGH>;
 };
 
 &cpu0 {
