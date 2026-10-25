@@ -330,6 +330,12 @@
 		};
 	};
 
+	/*
+	 * opp-peak-kBps: the CPU-to-DDR floor of stock's mincpubw-cpufreq
+	 * (cpu-to-dev-map-0/-4, MB/s), the first entry at or above each
+	 * frequency. The CPU BWMON adds bandwidth for memory-bound loads.
+	 */
+
 	/* qcom,pwrcl-speedbin0-v0 */
 	pwr_opp_table: opp-table-pwr {
 		compatible = "operating-points-v2-qcom-osm";
@@ -337,6 +343,7 @@
 
 		opp-300000000 {
 			opp-hz = /bits/ 64 <300000000>;
+			opp-peak-kBps = <762000>;
 			required-opps = <&cprh_opp1>;
 			qcom,pll-override = <0x1200020>;
 			qcom,spare-data = <1>;
@@ -344,6 +351,7 @@
 
 		opp-614400000 {
 			opp-hz = /bits/ 64 <614400000>;
+			opp-peak-kBps = <762000>;
 			required-opps = <&cprh_opp2>;
 			qcom,pll-override = <0x3200020>;
 			qcom,spare-data = <1>;
@@ -352,6 +360,7 @@
 
 		opp-883200000 {
 			opp-hz = /bits/ 64 <883200000>;
+			opp-peak-kBps = <1571000>;
 			required-opps = <&cprh_opp3>;
 			qcom,pll-override = <0x4250025>;
 			qcom,spare-data = <1>;
@@ -359,6 +368,7 @@
 
 		opp-1094400000 {
 			opp-hz = /bits/ 64 <1094400000>;
+			opp-peak-kBps = <1571000>;
 			required-opps = <&cprh_opp4>;
 			qcom,pll-override = <0x52e002e>;
 			qcom,spare-data = <2>;
@@ -366,6 +376,7 @@
 
 		opp-1382400000 {
 			opp-hz = /bits/ 64 <1382400000>;
+			opp-peak-kBps = <1571000>;
 			required-opps = <&cprh_opp5>;
 			qcom,pll-override = <0x7390039>;
 			qcom,spare-data = <2>;
@@ -373,6 +384,7 @@
 
 		opp-1536000000 {
 			opp-hz = /bits/ 64 <1536000000>;
+			opp-peak-kBps = <1571000>;
 			required-opps = <&cprh_opp6>;
 			qcom,pll-override = <0x8400040>;
 			qcom,spare-data = <2>;
@@ -380,6 +392,7 @@
 
 		opp-1728000000 {
 			opp-hz = /bits/ 64 <1728000000>;
+			opp-peak-kBps = <3879000>;
 			required-opps = <&cprh_opp7>;
 			qcom,pll-override = <0x9480048>;
 			qcom,spare-data = <2>;
@@ -387,6 +400,7 @@
 
 		opp-1843200000 {
 			opp-hz = /bits/ 64 <1843200000>;
+			opp-peak-kBps = <3879000>;
 			required-opps = <&cprh_opp8>;
 			qcom,pll-override = <0x94c004c>;
 			qcom,spare-data = <3>;
@@ -400,6 +414,7 @@
 
 		opp-300000000 {
 			opp-hz = /bits/ 64 <300000000>;
+			opp-peak-kBps = <762000>;
 			required-opps = <&cprh_opp1>;
 			qcom,pll-override = <0x1200020>;
 			qcom,spare-data = <1>;
@@ -407,6 +422,7 @@
 
 		opp-787200000 {
 			opp-hz = /bits/ 64 <787200000>;
+			opp-peak-kBps = <762000>;
 			required-opps = <&cprh_opp2>;
 			qcom,pll-override = <0x4200020>;
 			qcom,spare-data = <1>;
@@ -415,6 +431,7 @@
 
 		opp-1113600000 {
 			opp-hz = /bits/ 64 <1113600000>;
+			opp-peak-kBps = <1571000>;
 			required-opps = <&cprh_opp3>;
 			qcom,pll-override = <0x52e002e>;
 			qcom,spare-data = <1>;
@@ -422,6 +439,7 @@
 
 		opp-1344000000 {
 			opp-hz = /bits/ 64 <1344000000>;
+			opp-peak-kBps = <1571000>;
 			required-opps = <&cprh_opp4>;
 			qcom,pll-override = <0x7380038>;
 			qcom,spare-data = <2>;
@@ -429,6 +447,7 @@
 
 		opp-1516800000 {
 			opp-hz = /bits/ 64 <1516800000>;
+			opp-peak-kBps = <2929000>;
 			required-opps = <&cprh_opp5>;
 			qcom,pll-override = <0x73f003f>;
 			qcom,spare-data = <2>;
@@ -436,6 +455,7 @@
 
 		opp-1670400000 {
 			opp-hz = /bits/ 64 <1670400000>;
+			opp-peak-kBps = <2929000>;
 			required-opps = <&cprh_opp6>;
 			qcom,pll-override = <0x8450045>;
 			qcom,spare-data = <2>;
@@ -443,6 +463,7 @@
 
 		opp-1881600000 {
 			opp-hz = /bits/ 64 <1881600000>;
+			opp-peak-kBps = <2929000>;
 			required-opps = <&cprh_opp7>;
 			qcom,pll-override = <0x94e004e>;
 			qcom,spare-data = <2>;
@@ -450,6 +471,7 @@
 
 		opp-2016000000 {
 			opp-hz = /bits/ 64 <2016000000>;
+			opp-peak-kBps = <3879000>;
 			required-opps = <&cprh_opp8>;
 			qcom,pll-override = <0xa540054>;
 			qcom,spare-data = <2>;
@@ -457,6 +479,7 @@
 
 		opp-2150400000 {
 			opp-hz = /bits/ 64 <2150400000>;
+			opp-peak-kBps = <3879000>;
 			required-opps = <&cprh_opp9>;
 			qcom,pll-override = <0xb590059>;
 			qcom,spare-data = <2>;
@@ -464,6 +487,7 @@
 
 		opp-2208000000 {
 			opp-hz = /bits/ 64 <2208000000>;
+			opp-peak-kBps = <3879000>;
 			required-opps = <&cprh_opp10>;
 			qcom,pll-override = <0xb5c005c>;
 			qcom,spare-data = <3>;
