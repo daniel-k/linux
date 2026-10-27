@@ -76,6 +76,12 @@
 			status = "disabled";
 		};
 
+		pm660l_lcdb: regulator@ec00 {
+			compatible = "qcom,pm660l-lcdb";
+			reg = <0xec00>;
+			status = "disabled";
+		};
+
 		pm660l_wled: leds@d800 {
 			compatible = "qcom,pm660l-wled";
 			reg = <0xd800>, <0xd900>;

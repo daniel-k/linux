@@ -99,19 +99,6 @@
 		};
 	};
 
-	/*
-	 * PM660L LCDB powers the panel's positive and negative bias rails.
-	 * There is no driver for it yet; the bootloader enables it (5.4 V).
-	 */
-	lcdb: lcdb-regulator {
-		compatible = "regulator-fixed";
-		regulator-name = "lcdb";
-		regulator-min-microvolt = <5400000>;
-		regulator-max-microvolt = <5400000>;
-		regulator-always-on;
-		regulator-boot-on;
-	};
-
 	reserved-memory {
 		cont_splash: splash-region@9d400000 {
 			reg = <0x0 0x9d400000 0x0 0x23ff000>;
@@ -205,6 +192,8 @@
 
 		reset-gpios = <&tlmm 53 GPIO_ACTIVE_LOW>;
 		vddio-supply = <&vreg_l11a_1p8>;
+		vsp-supply = <&pm660l_lcdb>;
+		vsn-supply = <&pm660l_lcdb>;
 		backlight = <&pm660l_wled>;
 
 		pinctrl-0 = <&mdss_dsi_active &mdss_te_active>;
@@ -230,6 +219,12 @@
 };
 
 &mmss_smmu {
+	status = "okay";
+};
+
+&pm660l_lcdb {
+	regulator-name = "lcdb";
+
 	status = "okay";
 };
 
