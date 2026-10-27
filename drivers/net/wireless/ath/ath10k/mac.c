@@ -3200,6 +3200,16 @@ static void ath10k_bss_disassoc(struct ieee80211_hw *hw,
 	ath10k_dbg(ar, ATH10K_DBG_MAC, "mac vdev %i disassoc bssid %pM\n",
 		   arvif->vdev_id, arvif->bssid);
 
+	/*
+	 * mac80211 replays a disassociation for every station interface when
+	 * it reconfigures the device after system resume. WCN3990 firmware
+	 * crashes when a vdev that was never brought up is taken down.
+	 */
+	if (!arvif->is_up) {
+		cancel_delayed_work_sync(&arvif->connection_loss_work);
+		return;
+	}
+
 	ret = ath10k_wmi_vdev_down(ar, arvif->vdev_id);
 	if (ret)
 		ath10k_warn(ar, "failed to down vdev %i: %d\n",
