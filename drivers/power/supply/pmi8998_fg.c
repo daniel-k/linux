@@ -6,6 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
@@ -13,6 +14,7 @@
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/unaligned.h>
 #include <linux/workqueue.h>
 
 /* SOC */
@@ -28,15 +30,35 @@
 #define PARAM_ADDR_BATT_CURRENT		0x1a2
 
 /* MEMIF */
+#define MEM_INTF_CFG			0x450
+#define MEM_INTF_IMA_CTL		0x451
 #define MEM_INTF_IMA_CFG		0x452
+#define MEM_INTF_IMA_OPR_STS		0x454
 #define MEM_INTF_IMA_EXP_STS		0x455
 #define MEM_INTF_IMA_HW_STS		0x456
+#define MEM_INTF_BEAT_COUNT		0x457
 #define MEM_INTF_IMA_ERR_STS		0x45f
 #define MEM_INTF_ADDR_LSB		0x461
 #define MEM_INTF_RD_DATA0		0x467
 #define MEM_INTF_WR_DATA0		0x463
 #define MEM_IF_DMA_STS			0x470
 #define MEM_IF_DMA_CTL			0x471
+
+#define MEM_ACCESS_REQ			BIT(7)
+#define IACS_SLCT			BIT(5)
+#define IMA_CTL_MASK			GENMASK(7, 6)
+#define IACS_RDY			BIT(1)
+#define BEAT_COUNT_MASK			GENMASK(3, 0)
+
+/* SRAM words */
+#define SRAM_NOM_CAP_WORD		58
+#define SRAM_ACT_BATT_CAP_WORD		74
+#define SRAM_CC_SOC_WORD		95
+#define SRAM_WORD_BYTES			4
+#define SRAM_READ_TRIES			3
+
+/* CC_SOC is a signed fraction of the nominal capacity */
+#define CC_SOC_FULL			GENMASK(29, 0)
 
 #define BATT_TEMP_LSB_MASK		GENMASK(7, 0)
 #define BATT_TEMP_MSB_MASK		GENMASK(2, 0)
@@ -51,7 +73,14 @@ struct pmi8998_fg_chip {
 	struct power_supply *chg_psy;
 	int status;
 	struct delayed_work status_changed_work;
+
+	/* serialises IMA access to the FG SRAM */
+	struct mutex sram_lock;
+	int nom_cap_uah;
+	int act_cap_uah;
 };
+
+static int pmi8998_fg_clear_ima(struct pmi8998_fg_chip *chip, bool check_hw_sts);
 
 /************************
  * IO FUNCTIONS
@@ -294,6 +323,196 @@ static int pmi8998_fg_get_temp_threshold(struct pmi8998_fg_chip *chip,
 }
 
 /************************
+ * SRAM ACCESS
+ * **********************/
+
+static int pmi8998_fg_iacs_ready(struct pmi8998_fg_chip *chip)
+{
+	int tries = 250;
+	u8 sts;
+	int ret;
+
+	usleep_range(30, 35);
+	for (;;) {
+		ret = pmi8998_fg_read(chip, &sts, MEM_INTF_IMA_OPR_STS, 1);
+		if (ret)
+			return ret;
+		if (sts & IACS_RDY)
+			return 0;
+		if (!--tries)
+			break;
+		usleep_range(5000, 7000);
+	}
+
+	ret = pmi8998_fg_clear_ima(chip, false);
+
+	return ret ?: -EBUSY;
+}
+
+static int pmi8998_fg_set_sram_addr(struct pmi8998_fg_chip *chip, u16 word)
+{
+	u8 addr[2] = { word & 0xff, 0 };
+
+	return pmi8998_fg_write(chip, addr, MEM_INTF_ADDR_LSB, 2);
+}
+
+/* One IMA read in single mode, the only mode PM660 supports reliably */
+static int pmi8998_fg_sram_read_once(struct pmi8998_fg_chip *chip, u16 word,
+				     u8 offset, u8 *val, int len)
+{
+	u8 start, end;
+	int n, ret;
+
+	ret = pmi8998_fg_masked_write(chip, MEM_INTF_IMA_CTL, IMA_CTL_MASK, 0);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_iacs_ready(chip);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_set_sram_addr(chip, word);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_iacs_ready(chip);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_read(chip, &start, MEM_INTF_BEAT_COUNT, 1);
+	if (ret)
+		return ret;
+
+	while (len > 0) {
+		n = min_t(int, len, SRAM_WORD_BYTES - offset);
+		ret = pmi8998_fg_read(chip, val, MEM_INTF_RD_DATA0 + offset, n);
+		if (ret)
+			return ret;
+
+		ret = pmi8998_fg_clear_ima(chip, false);
+		if (ret)
+			return ret;
+
+		val += n;
+		len -= n;
+		offset = 0;
+
+		if (len) {
+			ret = pmi8998_fg_set_sram_addr(chip, ++word);
+			if (ret)
+				return ret;
+		}
+
+		ret = pmi8998_fg_iacs_ready(chip);
+		if (ret)
+			return ret;
+	}
+
+	ret = pmi8998_fg_read(chip, &end, MEM_INTF_BEAT_COUNT, 1);
+	if (ret)
+		return ret;
+
+	/* The FG updated the SRAM while it was read */
+	if ((start ^ end) & BEAT_COUNT_MASK)
+		return -EAGAIN;
+
+	return 0;
+}
+
+static int pmi8998_fg_sram_read(struct pmi8998_fg_chip *chip, u16 word,
+				u8 offset, u8 *val, int len)
+{
+	int tries, polls, ret, rel;
+	u8 cfg;
+
+	if (offset >= SRAM_WORD_BYTES)
+		return -EINVAL;
+
+	mutex_lock(&chip->sram_lock);
+
+	for (tries = 0; tries < SRAM_READ_TRIES; tries++) {
+		/* MEM_ACCESS_REQ stays set until the previous access ends */
+		for (polls = 0; polls < 5; polls++) {
+			ret = pmi8998_fg_read(chip, &cfg, MEM_INTF_CFG, 1);
+			if (ret || !(cfg & MEM_ACCESS_REQ))
+				break;
+			usleep_range(4000, 4100);
+		}
+		if (!ret && (cfg & MEM_ACCESS_REQ))
+			ret = -EBUSY;
+
+		if (!ret)
+			ret = pmi8998_fg_masked_write(chip, MEM_INTF_CFG,
+						      MEM_ACCESS_REQ | IACS_SLCT,
+						      MEM_ACCESS_REQ | IACS_SLCT);
+		if (!ret)
+			ret = pmi8998_fg_sram_read_once(chip, word, offset,
+							val, len);
+
+		rel = pmi8998_fg_masked_write(chip, MEM_INTF_CFG,
+					      MEM_ACCESS_REQ | IACS_SLCT, 0);
+		if (!ret)
+			ret = rel;
+		if (!ret)
+			break;
+	}
+
+	mutex_unlock(&chip->sram_lock);
+
+	if (ret)
+		dev_err(chip->dev, "Failed to read SRAM word %u: %d\n", word, ret);
+
+	return ret;
+}
+
+static int pmi8998_fg_read_capacities(struct pmi8998_fg_chip *chip)
+{
+	u8 buf[2];
+	int ret;
+
+	ret = pmi8998_fg_sram_read(chip, SRAM_NOM_CAP_WORD, 0, buf, 2);
+	if (ret)
+		return ret;
+	chip->nom_cap_uah = get_unaligned_le16(buf) * 1000;
+
+	ret = pmi8998_fg_sram_read(chip, SRAM_ACT_BATT_CAP_WORD, 0, buf, 2);
+	if (ret)
+		return ret;
+	chip->act_cap_uah = get_unaligned_le16(buf) * 1000;
+
+	return 0;
+}
+
+/**
+ * @brief pmi8998_fg_get_charge_counter() - Get the coulomb counter
+ *
+ * The FG integrates the battery current in CC_SOC, also while the SoC
+ * sleeps, so differences of this value give the charge used over any
+ * interval.
+ *
+ * @param chip Pointer to chip
+ * @param val Pointer to store value at
+ * @return int 0 on success, negative errno on error
+ */
+static int pmi8998_fg_get_charge_counter(struct pmi8998_fg_chip *chip, int *val)
+{
+	u8 buf[4];
+	int ret;
+
+	if (!chip->nom_cap_uah)
+		return -ENODATA;
+
+	ret = pmi8998_fg_sram_read(chip, SRAM_CC_SOC_WORD, 0, buf, 4);
+	if (ret)
+		return ret;
+
+	*val = div_s64((s64)(s32)get_unaligned_le32(buf) * chip->nom_cap_uah,
+		       CC_SOC_FULL);
+
+	return 0;
+}
+
+/************************
  * BATTERY POWER SUPPLY
  * **********************/
 
@@ -309,6 +528,8 @@ static enum power_supply_property pmi8998_fg_props[] = {
 	POWER_SUPPLY_PROP_TEMP_MAX,
 	POWER_SUPPLY_PROP_TEMP_ALERT_MIN,
 	POWER_SUPPLY_PROP_TEMP_ALERT_MAX,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
 };
 
 static int pmi8998_fg_get_property(struct power_supply *psy,
@@ -386,6 +607,14 @@ static int pmi8998_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_TEMP_ALERT_MIN:
 	case POWER_SUPPLY_PROP_TEMP_ALERT_MAX:
 		ret = pmi8998_fg_get_temp_threshold(chip, psp, &val->intval);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		ret = pmi8998_fg_get_charge_counter(chip, &val->intval);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_FULL:
+		if (!chip->act_cap_uah && !chip->nom_cap_uah)
+			return -ENODATA;
+		val->intval = chip->act_cap_uah ?: chip->nom_cap_uah;
 		break;
 	default:
 		dev_err(chip->dev, "invalid property: %d\n", psp);
@@ -577,6 +806,7 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	chip->dev = &pdev->dev;
+	mutex_init(&chip->sram_lock);
 
 	chip->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!chip->regmap) {
@@ -625,6 +855,13 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 		dev_err(chip->dev, "Failed to write dma_ctl: %d\n", ret);
 		return ret;
 	}
+
+	ret = pmi8998_fg_read_capacities(chip);
+	if (ret)
+		dev_warn(chip->dev, "No capacity from SRAM, no charge counter: %d\n", ret);
+	else
+		dev_info(chip->dev, "nominal capacity %d mAh, learned %d mAh\n",
+			 chip->nom_cap_uah / 1000, chip->act_cap_uah / 1000);
 
 	supply_config.drv_data = chip;
 
