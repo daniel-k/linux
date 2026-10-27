@@ -2322,7 +2322,8 @@ static struct gdsc usb_30_gdsc = {
 	.pd = {
 		.name = "usb_30_gdsc",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
+	/* dwc3 loses its state when the GDSC collapses in system suspend */
+	.pwrsts = PWRSTS_RET_ON,
 	.flags = VOTABLE,
 };
 
