@@ -6,6 +6,8 @@
  * Copyright (c) 2014,2017 The Linux Foundation. All rights reserved.
  */
 
+#include <drm/drm_atomic_helper.h>
+
 #include "adreno_gpu.h"
 
 bool hang_debug = false;
@@ -290,6 +292,20 @@ static void adreno_remove(struct platform_device *pdev)
 
 static void adreno_shutdown(struct platform_device *pdev)
 {
+	struct msm_gpu *gpu = dev_to_gpu(&pdev->dev);
+	struct drm_device *drm = gpu ? gpu->dev : NULL;
+	struct msm_drm_private *priv = drm ? drm->dev_private : NULL;
+
+	/*
+	 * Turn the display off while the GPU still runs jobs. A compositor
+	 * that is still alive at a forced reboot keeps queueing jobs; once
+	 * the schedulers are parked they never run, a page flip waits for
+	 * them forever and the display's own shutdown commit waits behind
+	 * that flip.
+	 */
+	if (drm && drm->registered && priv && priv->kms)
+		drm_atomic_helper_shutdown(drm);
+
 	WARN_ON_ONCE(adreno_system_suspend(&pdev->dev));
 }
 
