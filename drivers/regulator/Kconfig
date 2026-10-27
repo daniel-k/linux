@@ -1149,6 +1149,15 @@ config REGULATOR_QCOM_PM8008
 	  Select this option to enable support for the voltage regulators in
 	  Qualcomm PM8008 PMICs.
 
+config REGULATOR_QCOM_LCDB
+	tristate "Qualcomm PM660L LCD bias regulator driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on SPMI || COMPILE_TEST
+	depends on REGMAP
+	help
+	  This driver switches the LCD bias block (LCDB) of the PM660L PMIC,
+	  which supplies the positive and negative bias rails of LCD panels.
+
 config REGULATOR_QCOM_REFGEN
 	tristate "Qualcomm REFGEN regulator driver"
 	depends on ARCH_QCOM || COMPILE_TEST
