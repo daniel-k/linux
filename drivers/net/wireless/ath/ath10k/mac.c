@@ -3217,11 +3217,17 @@ static void ath10k_bss_disassoc(struct ieee80211_hw *hw,
 
 	arvif->def_wep_key_idx = -1;
 
-	ret = ath10k_mac_vif_recalc_txbf(ar, vif, vht_cap);
-	if (ret) {
-		ath10k_warn(ar, "failed to recalc txbf for vdev %i: %d\n",
-			    arvif->vdev_id, ret);
-		return;
+	/*
+	 * WCN3990 firmware crashes when TXBF is set on a vdev that is down.
+	 * The next association sets it again, so leave it as it is.
+	 */
+	if (ar->hif.bus != ATH10K_BUS_SNOC) {
+		ret = ath10k_mac_vif_recalc_txbf(ar, vif, vht_cap);
+		if (ret) {
+			ath10k_warn(ar, "failed to recalc txbf for vdev %i: %d\n",
+				    arvif->vdev_id, ret);
+			return;
+		}
 	}
 
 	arvif->is_up = false;
