@@ -2,6 +2,7 @@
 /* Copyright (c) 2020, The Linux Foundation. All rights reserved. */
 
 #include <linux/device.h>
+#include <linux/devm-helpers.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
@@ -78,6 +79,11 @@ struct pmi8998_fg_chip {
 	struct mutex sram_lock;
 	int nom_cap_uah;
 	int act_cap_uah;
+
+	/* charge limit: stop at charge_end %, resume at charge_start % */
+	int charge_start;
+	int charge_end;
+	struct work_struct charge_limit_work;
 };
 
 static int pmi8998_fg_clear_ima(struct pmi8998_fg_chip *chip, bool check_hw_sts);
@@ -530,6 +536,8 @@ static enum power_supply_property pmi8998_fg_props[] = {
 	POWER_SUPPLY_PROP_TEMP_ALERT_MAX,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 };
 
 static int pmi8998_fg_get_property(struct power_supply *psy,
@@ -616,6 +624,12 @@ static int pmi8998_fg_get_property(struct power_supply *psy,
 			return -ENODATA;
 		val->intval = chip->act_cap_uah ?: chip->nom_cap_uah;
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		val->intval = chip->charge_start;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		val->intval = chip->charge_end;
+		break;
 	default:
 		dev_err(chip->dev, "invalid property: %d\n", psp);
 		return -EINVAL;
@@ -624,12 +638,47 @@ static int pmi8998_fg_get_property(struct power_supply *psy,
 	return ret;
 }
 
+static int pmi8998_fg_set_property(struct power_supply *psy,
+				   enum power_supply_property psp,
+				   const union power_supply_propval *val)
+{
+	struct pmi8998_fg_chip *chip = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		if (val->intval < 0 || val->intval >= chip->charge_end)
+			return -EINVAL;
+		chip->charge_start = val->intval;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		if (val->intval <= chip->charge_start || val->intval > 100)
+			return -EINVAL;
+		chip->charge_end = val->intval;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	schedule_work(&chip->charge_limit_work);
+
+	return 0;
+}
+
+static int pmi8998_fg_property_is_writeable(struct power_supply *psy,
+					    enum power_supply_property psp)
+{
+	return psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	       psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
+}
+
 static const struct power_supply_desc batt_psy_desc = {
 	.name = "qcom-battery",
 	.type = POWER_SUPPLY_TYPE_BATTERY,
 	.properties = pmi8998_fg_props,
 	.num_properties = ARRAY_SIZE(pmi8998_fg_props),
 	.get_property = pmi8998_fg_get_property,
+	.set_property = pmi8998_fg_set_property,
+	.property_is_writeable = pmi8998_fg_property_is_writeable,
 };
 
 /********************
@@ -730,9 +779,49 @@ static int pmi8998_fg_clear_ima(struct pmi8998_fg_chip *chip, bool check_hw_sts)
 	return 0;
 }
 
+/*
+ * Run from the battery from charge_end down to charge_start, then charge
+ * again; in between keep whatever the charger does, so the battery cycles
+ * between the two while the phone stays plugged in. Inhibiting charging
+ * with the input on is not enough: the battery still takes ~16 mA and
+ * creeps up. An end threshold of 100 is no limit.
+ */
+static void pmi8998_fg_charge_limit_worker(struct work_struct *work)
+{
+	struct pmi8998_fg_chip *chip = container_of(work, struct pmi8998_fg_chip,
+						    charge_limit_work);
+	union power_supply_propval val;
+	int capacity, behaviour;
+
+	if (!chip->chg_psy || pmi8998_fg_get_capacity(chip, &capacity))
+		return;
+
+	if (chip->charge_end < 100 && capacity >= chip->charge_end)
+		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
+	else if (chip->charge_end == 100 || capacity <= chip->charge_start)
+		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+	else
+		return;
+
+	if (!power_supply_get_property(chip->chg_psy,
+				       POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &val) &&
+	    val.intval == behaviour)
+		return;
+
+	dev_info(chip->dev, "%s charging at %d%% (limit %d-%d%%)\n",
+		 behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO ? "resume" : "stop",
+		 capacity, chip->charge_start, chip->charge_end);
+
+	val.intval = behaviour;
+	power_supply_set_property(chip->chg_psy,
+				  POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &val);
+}
+
 static irqreturn_t pmi8998_fg_handle_soc_delta(int irq, void *data)
 {
 	struct pmi8998_fg_chip *chip = data;
+
+	schedule_work(&chip->charge_limit_work);
 
 	/* Signal change in state of charge */
 	power_supply_changed(chip->batt_psy);
@@ -762,6 +851,7 @@ static int pmi8998_fg_notifier_call(struct notifier_block *nb, unsigned long val
 		chip->status = ret ? POWER_SUPPLY_STATUS_UNKNOWN : propval.intval;
 
 		power_supply_changed(chip->batt_psy);
+		schedule_work(&chip->charge_limit_work);
 
 		if (chip->status == POWER_SUPPLY_STATUS_UNKNOWN) {
 			/*
@@ -807,6 +897,12 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 
 	chip->dev = &pdev->dev;
 	mutex_init(&chip->sram_lock);
+	chip->charge_start = 0;
+	chip->charge_end = 100;
+	ret = devm_work_autocancel(chip->dev, &chip->charge_limit_work,
+				   pmi8998_fg_charge_limit_worker);
+	if (ret)
+		return ret;
 
 	chip->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!chip->regmap) {
@@ -891,6 +987,10 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/* keeps the charge limit while suspended on a charger */
+	device_init_wakeup(chip->dev, true);
+	enable_irq_wake(irq);
+
 	/* Optional: Get charger power supply for status checking */
 	chip->chg_psy = power_supply_get_by_reference(dev_fwnode(chip->dev),
 						    "power-supplies");
@@ -917,6 +1017,8 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 					       chip);
 		if (ret)
 			return ret;
+
+		schedule_work(&chip->charge_limit_work);
 	}
 
 	return 0;
