@@ -24,6 +24,7 @@ struct payton_tianma {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
 	struct regulator *vddio;
+	struct regulator_bulk_data bias[2];
 	struct gpio_desc *reset_gpio;
 };
 
@@ -106,12 +107,21 @@ static int payton_tianma_prepare(struct drm_panel *panel)
 	}
 	usleep_range(2000, 3000);
 
+	ret = regulator_bulk_enable(ARRAY_SIZE(ctx->bias), ctx->bias);
+	if (ret < 0) {
+		dev_err(dev, "Failed to enable bias supplies: %d\n", ret);
+		regulator_disable(ctx->vddio);
+		return ret;
+	}
+	usleep_range(3000, 4000);
+
 	payton_tianma_reset(ctx);
 
 	ret = payton_tianma_on(ctx);
 	if (ret < 0) {
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		regulator_bulk_disable(ARRAY_SIZE(ctx->bias), ctx->bias);
 		regulator_disable(ctx->vddio);
 		return ret;
 	}
@@ -130,6 +140,8 @@ static int payton_tianma_unprepare(struct drm_panel *panel)
 		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
 
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	usleep_range(10000, 11000);
+	regulator_bulk_disable(ARRAY_SIZE(ctx->bias), ctx->bias);
 	usleep_range(15000, 16000);
 	regulator_disable(ctx->vddio);
 
@@ -179,6 +191,12 @@ static int payton_tianma_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->vddio))
 		return dev_err_probe(dev, PTR_ERR(ctx->vddio),
 				     "Failed to get vddio regulator\n");
+
+	ctx->bias[0].supply = "vsp";
+	ctx->bias[1].supply = "vsn";
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ctx->bias), ctx->bias);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to get bias regulators\n");
 
 	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio))
