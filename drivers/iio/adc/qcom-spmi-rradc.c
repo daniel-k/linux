@@ -528,6 +528,7 @@ static int rradc_do_conversion(struct rradc_chip *chip,
 		}
 		break;
 
+	case RR_ADC_USBIN_I:
 	case RR_ADC_USBIN_V:
 	case RR_ADC_DIE_TEMP:
 		ret = rradc_read_status_in_cont_mode(chip, chan_address);
@@ -805,6 +806,7 @@ static const struct rradc_channel rradc_chans[RR_ADC_CHAN_MAX] = {
 		.status = RR_ADC_USB_IN_I_STS,
 		.size = 2,
 		.trigger_addr = RR_ADC_USB_IN_I_TRIGGER,
+		.trigger_mask = BIT(7),
 	}, {
 		.label = "usbin_v",
 		.lsb = RR_ADC_USB_IN_V_LSB,
