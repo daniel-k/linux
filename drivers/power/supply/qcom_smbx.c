@@ -412,6 +412,7 @@ static enum power_supply_property smb_properties[] = {
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 };
 
 static int smb_get_prop_usb_online(struct smb_chip *chip, int *val)
@@ -657,6 +658,71 @@ static int smb_get_prop_health(struct smb_chip *chip, int *val)
 	}
 }
 
+/*
+ * inhibit-charge clears the charge enable command and leaves the input on:
+ * the system runs from USB, but about 16 mA still flows into the battery.
+ * force-discharge suspends the input, so the system runs from the battery.
+ */
+static int smb_get_charge_behaviour(struct smb_chip *chip, int *val)
+{
+	unsigned int cmd, il;
+	int rc;
+
+	rc = regmap_read(chip->regmap, chip->base + USBIN_CMD_IL, &il);
+	if (rc)
+		return rc;
+
+	rc = regmap_read(chip->regmap, chip->base + CHARGING_ENABLE_CMD, &cmd);
+	if (rc)
+		return rc;
+
+	if (il & USBIN_SUSPEND_BIT)
+		*val = POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
+	else if (!(cmd & CHARGING_ENABLE_CMD_BIT))
+		*val = POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+	else
+		*val = POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+
+	return 0;
+}
+
+static int smb_set_charge_behaviour(struct smb_chip *chip, int val)
+{
+	bool suspend, enable;
+	int rc;
+
+	switch (val) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		suspend = false;
+		enable = true;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+		suspend = false;
+		enable = false;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE:
+		suspend = true;
+		enable = true;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	rc = regmap_update_bits(chip->regmap, chip->base + CHARGING_ENABLE_CMD,
+				CHARGING_ENABLE_CMD_BIT,
+				enable ? CHARGING_ENABLE_CMD_BIT : 0);
+	if (!rc)
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + USBIN_CMD_IL,
+					USBIN_SUSPEND_BIT,
+					suspend ? USBIN_SUSPEND_BIT : 0);
+
+	if (!rc)
+		power_supply_changed(chip->chg_psy);
+
+	return rc;
+}
+
 static int smb_get_property(struct power_supply *psy,
 			     enum power_supply_property psp,
 			     union power_supply_propval *val)
@@ -686,6 +752,8 @@ static int smb_get_property(struct power_supply *psy,
 		return smb_get_prop_health(chip, &val->intval);
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		return smb_apsd_get_charger_type(chip, &val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return smb_get_charge_behaviour(chip, &val->intval);
 	default:
 		dev_err(chip->dev, "invalid property: %d\n", psp);
 		return -EINVAL;
@@ -704,6 +772,8 @@ static int smb_set_property(struct power_supply *psy,
 					  USBIN_SUSPEND_BIT, !val->intval);
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		return smb_set_current_limit(chip, val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return smb_set_charge_behaviour(chip, val->intval);
 	default:
 		dev_err(chip->dev, "No setter for property: %d\n", psp);
 		return -EINVAL;
@@ -716,6 +786,7 @@ static int smb_property_is_writable(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
 		return 1;
 	default:
 		return 0;
@@ -782,6 +853,9 @@ static const struct power_supply_desc smb_psy_desc = {
 		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE) |
+			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE),
 	.properties = smb_properties,
 	.num_properties = ARRAY_SIZE(smb_properties),
 	.get_property = smb_get_property,
@@ -833,15 +907,20 @@ static const struct smb_init_register smb_init_seq[] = {
 	 * AUTO_RECHG_BIT - Enable automatic recharge when battery is full
 	 *                  0 = enabled
 	 * EN_ANALOG_DROP_IN_VBATT_BIT
-	 * CHARGER_INHIBIT_BIT - Inhibit charging based on battery voltage
-	 *                       instead of ??
+	 * CHARGER_INHIBIT_BIT - Do not start charging while the battery is
+	 *                       within CHARGE_INHIBIT_THRESHOLD of the float
+	 *                       voltage. Off as in the vendor driver without
+	 *                       qcom,chg-inhibit-threshold-mv: with it a phone
+	 *                       plugged in or booted near full stays there
+	 *                       (e.g. 94%, "Full") until VBAT sags below the
+	 *                       recharge threshold.
 	 */
 	{ .addr = CHGR_CFG2,
 	  .mask = CHG_EN_SRC_BIT | CHG_EN_POLARITY_BIT |
 		  PRETOFAST_TRANSITION_CFG_BIT | BAT_OV_ECC_BIT | I_TERM_BIT |
 		  AUTO_RECHG_BIT | EN_ANALOG_DROP_IN_VBATT_BIT |
 		  CHARGER_INHIBIT_BIT,
-	  .val = CHARGER_INHIBIT_BIT },
+	  .val = 0 },
 	/* STAT pin software override, match downstream. Parallel charging? */
 	{ .addr = STAT_CFG,
 	  .mask = STAT_SW_OVERRIDE_CFG_BIT,
