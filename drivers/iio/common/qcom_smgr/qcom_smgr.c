@@ -60,7 +60,11 @@ static int qcom_smgr_register_sensor(struct qcom_smgr *smgr,
 	if (sensor->type == SNS_SMGR_SENSOR_TYPE_UNKNOWN)
 		return -ENODEV;
 
-	name = qcom_smgr_sensor_type_platform_names[sensor->type];
+	if (sensor->type == SNS_SMGR_SENSOR_TYPE_PROX_LIGHT &&
+	    sensor->data_type == SNS_SMGR_DATA_TYPE_SECONDARY)
+		name = "qcom-smgr-light";
+	else
+		name = qcom_smgr_sensor_type_platform_names[sensor->type];
 
 	pdev = platform_device_register_data(smgr->dev, name, sensor->id,
 					     &sensor, sizeof(sensor));
@@ -210,11 +214,7 @@ static int qcom_smgr_request_buffering(struct qcom_smgr *smgr,
 				       bool enable)
 {
 	struct sns_smgr_buffering_req req = {
-		/*
-		 * Reuse sensor ID as a report ID to avoid having to keep track
-		 * of a separate set of IDs
-		 */
-		.report_id = sensor->id,
+		.report_id = sensor->report_id,
 		.notify_suspend_valid = false
 	};
 	struct sns_smgr_buffering_resp resp = {};
@@ -255,7 +255,7 @@ static int qcom_smgr_request_buffering(struct qcom_smgr *smgr,
 
 		req.item_len = 1;
 		req.items[0].sensor_id = sensor->id;
-		req.items[0].data_type = SNS_SMGR_DATA_TYPE_PRIMARY;
+		req.items[0].data_type = sensor->data_type;
 
 		req.items[0].sampling_rate = sample_rate;
 
@@ -320,7 +320,7 @@ static void qcom_smgr_buffering_report_handler(struct qmi_handle *hdl,
 		sensor = &smgr->sensors[i];
 
 		/* Find sensor matching report */
-		if (sensor->id != ind->report_id)
+		if (sensor->report_id != ind->report_id)
 			continue;
 
 		if (!sensor->iio_dev)
@@ -498,6 +498,67 @@ const struct iio_chan_spec_ext_info qcom_smgr_iio_ext_info[] = {
 };
 EXPORT_SYMBOL_GPL(qcom_smgr_iio_ext_info);
 
+static bool qcom_smgr_report_id_used(struct qcom_smgr_sensor *sensors,
+				     int count, u8 report_id)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+		if (sensors[i].report_id == report_id)
+			return true;
+	return false;
+}
+
+/*
+ * Light comes as the secondary data type of a proximity/light sensor: give it
+ * an entry of its own, streamed under an unused report ID. Report IDs of the
+ * other entries are their sensor IDs.
+ */
+static int qcom_smgr_add_secondary_sensors(struct qcom_smgr *smgr)
+{
+	struct qcom_smgr_sensor *sensors, *light;
+	int count = smgr->sensor_count;
+	int i, extra = 0;
+	u8 report_id = 0;
+
+	for (i = 0; i < smgr->sensor_count; i++) {
+		smgr->sensors[i].data_type = SNS_SMGR_DATA_TYPE_PRIMARY;
+		smgr->sensors[i].report_id = smgr->sensors[i].id;
+		if (smgr->sensors[i].type == SNS_SMGR_SENSOR_TYPE_PROX_LIGHT &&
+		    smgr->sensors[i].data_type_count > SNS_SMGR_DATA_TYPE_SECONDARY)
+			extra++;
+	}
+	if (!extra)
+		return 0;
+
+	sensors = devm_kcalloc(smgr->dev, count + extra, sizeof(*sensors),
+			       GFP_KERNEL);
+	if (!sensors)
+		return -ENOMEM;
+	memcpy(sensors, smgr->sensors, count * sizeof(*sensors));
+
+	for (i = 0; i < smgr->sensor_count; i++) {
+		if (sensors[i].type != SNS_SMGR_SENSOR_TYPE_PROX_LIGHT ||
+		    sensors[i].data_type_count <= SNS_SMGR_DATA_TYPE_SECONDARY)
+			continue;
+
+		while (qcom_smgr_report_id_used(sensors, count, report_id))
+			report_id++;
+
+		light = &sensors[count++];
+		*light = sensors[i];
+		light->data_type = SNS_SMGR_DATA_TYPE_SECONDARY;
+		light->report_id = report_id;
+		light->data_types = &sensors[i].data_types[SNS_SMGR_DATA_TYPE_SECONDARY];
+		light->data_type_count = 1;
+	}
+
+	smgr->sensors = sensors;
+	smgr->sensor_count = count;
+
+	return 0;
+}
+
 static int qcom_smgr_probe(struct qrtr_device *qdev)
 {
 	struct qcom_smgr *smgr;
@@ -547,17 +608,22 @@ static int qcom_smgr_probe(struct qrtr_device *qdev)
 
 		for (j = 0; j < smgr->sensors[i].data_type_count; j++) {
 			/* Default to maximum sample rate */
-			smgr->sensors[i].data_types->cur_sample_rate =
-				smgr->sensors[i].data_types->max_sample_rate;
+			smgr->sensors[i].data_types[j].cur_sample_rate =
+				smgr->sensors[i].data_types[j].max_sample_rate;
 
 			dev_info(smgr->dev, "0x%02x,%d: %s %s\n",
 				smgr->sensors[i].id, j,
 				smgr->sensors[i].data_types[j].vendor,
 				smgr->sensors[i].data_types[j].name);
 		}
-
-		qcom_smgr_register_sensor(smgr, &smgr->sensors[i]);
 	}
+
+	ret = qcom_smgr_add_secondary_sensors(smgr);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < smgr->sensor_count; i++)
+		qcom_smgr_register_sensor(smgr, &smgr->sensors[i]);
 
 	return 0;
 }

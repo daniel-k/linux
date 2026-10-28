@@ -520,6 +520,16 @@ config PA12203001
 	  This driver can also be built as a module.  If so, the module
 	  will be called pa12203001.
 
+config IIO_QCOM_SMGR_LIGHT
+	tristate "Qualcomm SSC Sensor Manager Light Sensor"
+	depends on IIO_QCOM_SMGR
+	select IIO_BUFFER
+	select IIO_KFIFO_BUF
+	help
+	  Say yes here to get support for ambient light sensors connected to
+	  a Qualcomm Snapdragon Sensor Core and accessed through its Sensor
+	  Manager service.
+
 config SI1133
 	tristate "SI1133 UV Index Sensor and Ambient Light Sensor"
 	depends on I2C

@@ -42,6 +42,9 @@ struct qcom_smgr_data_type_item {
 struct qcom_smgr_sensor {
 	u8 id;
 	enum qcom_smgr_sensor_type type;
+	/* Data type this entry streams, and the report ID it streams it with */
+	enum qcom_smgr_data_type data_type;
+	u8 report_id;
 
 	u8 data_type_count;
 	/*
