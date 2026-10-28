@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/usb/qcom,pmi8998-typec.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm PMI8998/PM660 SMB2 Type-C port with PD PHY
+
+maintainers:
+  - Daniel Roussel <224128+daniel-k@users.noreply.github.com>
+
+description:
+  The Type-C detection of the PMI8998 and PM660 PMICs is part of the SMB2
+  charger's USBIN peripheral. It reports attach, CC and VBUS changes through a
+  single interrupt. The PD PHY is a separate peripheral, the same as on
+  PM8150B.
+
+properties:
+  compatible:
+    oneOf:
+      - const: qcom,pmi8998-typec
+      - items:
+          - const: qcom,pm660-typec
+          - const: qcom,pmi8998-typec
+
+  reg:
+    items:
+      - description: SMB2 USBIN (Type-C) base
+      - description: PD PHY base
+
+  interrupts:
+    items:
+      - description: Type-C CC, debounce or VBUS state change
+      - description: PD signal TX - HardReset or CableReset signal TX
+      - description: PD signal RX - HardReset or CableReset signal RX
+      - description: PD TX complete
+      - description: PD RX complete
+      - description: PD TX fail
+      - description: PD TX message discard
+      - description: PD RX message discard
+
+  interrupt-names:
+    items:
+      - const: type-c-change
+      - const: sig-tx
+      - const: sig-rx
+      - const: msg-tx
+      - const: msg-rx
+      - const: msg-tx-failed
+      - const: msg-tx-discarded
+      - const: msg-rx-discarded
+
+  vdd-vbus-supply:
+    description: VBUS output, the charger's OTG boost.
+
+  vdd-pdphy-supply:
+    description: VDD regulator supply to the PD PHY.
+
+  connector:
+    type: object
+    $ref: /schemas/connector/usb-connector.yaml#
+    unevaluatedProperties: false
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-names
+  - vdd-vbus-supply
+  - vdd-pdphy-supply
+  - connector
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/usb/pd.h>
+
+    pmic {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        typec@1300 {
+            compatible = "qcom,pm660-typec", "qcom,pmi8998-typec";
+            reg = <0x1300>, <0x1700>;
+            interrupts = <0x0 0x13 0x7 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x0 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x1 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x2 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x3 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x4 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x5 IRQ_TYPE_EDGE_RISING>,
+                         <0x0 0x17 0x6 IRQ_TYPE_EDGE_RISING>;
+            interrupt-names = "type-c-change",
+                              "sig-tx",
+                              "sig-rx",
+                              "msg-tx",
+                              "msg-rx",
+                              "msg-tx-failed",
+                              "msg-tx-discarded",
+                              "msg-rx-discarded";
+            vdd-vbus-supply = <&pm660_vbus>;
+            vdd-pdphy-supply = <&vreg_l7b>;
+
+            connector {
+                compatible = "usb-c-connector";
+                power-role = "dual";
+                data-role = "dual";
+                try-power-role = "sink";
+                self-powered;
+                source-pdos = <PDO_FIXED(5000, 1500, PDO_FIXED_DUAL_ROLE |
+                                                     PDO_FIXED_USB_COMM |
+                                                     PDO_FIXED_DATA_SWAP)>;
+                sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+                                                   PDO_FIXED_USB_COMM |
+                                                   PDO_FIXED_DATA_SWAP)>;
+                op-sink-microwatt = <10000000>;
+
+                port {
+                    typec_hs_in: endpoint {
+                        remote-endpoint = <&usb_dwc3_hs>;
+                    };
+                };
+            };
+        };
+    };
+...
