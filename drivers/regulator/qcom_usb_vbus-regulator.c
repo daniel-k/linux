@@ -24,6 +24,25 @@ static const unsigned int curr_table[] = {
 	500000, 1000000, 1500000, 2000000, 2500000, 3000000,
 };
 
+static const unsigned int pmi8998_curr_table[] = {
+	250000, 500000, 750000, 1000000, 1250000, 1500000, 1750000, 2000000,
+};
+
+struct qcom_usb_vbus_data {
+	const unsigned int *curr_table;
+	unsigned int n_current_limits;
+};
+
+static const struct qcom_usb_vbus_data pm8150b_vbus_data = {
+	.curr_table = curr_table,
+	.n_current_limits = ARRAY_SIZE(curr_table),
+};
+
+static const struct qcom_usb_vbus_data pmi8998_vbus_data = {
+	.curr_table = pmi8998_curr_table,
+	.n_current_limits = ARRAY_SIZE(pmi8998_curr_table),
+};
+
 static const struct regulator_ops qcom_usb_vbus_reg_ops = {
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
@@ -37,13 +56,12 @@ static struct regulator_desc qcom_usb_vbus_rdesc = {
 	.ops = &qcom_usb_vbus_reg_ops,
 	.owner = THIS_MODULE,
 	.type = REGULATOR_VOLTAGE,
-	.curr_table = curr_table,
-	.n_current_limits = ARRAY_SIZE(curr_table),
 };
 
 static int qcom_usb_vbus_regulator_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	const struct qcom_usb_vbus_data *data;
 	struct regulator_dev *rdev;
 	struct regmap *regmap;
 	struct regulator_config config = { };
@@ -62,6 +80,10 @@ static int qcom_usb_vbus_regulator_probe(struct platform_device *pdev)
 		dev_err(dev, "Failed to get regmap\n");
 		return -ENOENT;
 	}
+
+	data = of_device_get_match_data(dev);
+	qcom_usb_vbus_rdesc.curr_table = data->curr_table;
+	qcom_usb_vbus_rdesc.n_current_limits = data->n_current_limits;
 
 	init_data = of_get_regulator_init_data(dev, dev->of_node,
 					       &qcom_usb_vbus_rdesc);
@@ -91,7 +113,8 @@ static int qcom_usb_vbus_regulator_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id qcom_usb_vbus_regulator_match[] = {
-	{ .compatible = "qcom,pm8150b-vbus-reg" },
+	{ .compatible = "qcom,pm8150b-vbus-reg", .data = &pm8150b_vbus_data },
+	{ .compatible = "qcom,pmi8998-vbus-reg", .data = &pmi8998_vbus_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, qcom_usb_vbus_regulator_match);
