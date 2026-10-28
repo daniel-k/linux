@@ -27,6 +27,10 @@
 struct pmic_typec_resources {
 	const struct pmic_typec_pdphy_resources	*pdphy_res;
 	const struct pmic_typec_port_resources	*port_res;
+	int (*port_probe)(struct platform_device *pdev,
+			  struct pmic_typec *tcpm,
+			  const struct pmic_typec_port_resources *res,
+			  struct regmap *regmap, u32 base);
 };
 
 static int qcom_pmic_typec_init(struct tcpc_dev *tcpc)
@@ -66,8 +70,7 @@ static int qcom_pmic_typec_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = qcom_pmic_typec_port_probe(pdev, tcpm,
-					 res->port_res, regmap, base);
+	ret = res->port_probe(pdev, tcpm, res->port_res, regmap, base);
 	if (ret)
 		return ret;
 
@@ -143,16 +146,25 @@ static void qcom_pmic_typec_remove(struct platform_device *pdev)
 static const struct pmic_typec_resources pm8150b_typec_res = {
 	.pdphy_res = &pm8150b_pdphy_res,
 	.port_res = &pm8150b_port_res,
+	.port_probe = qcom_pmic_typec_port_probe,
 };
 
 static const struct pmic_typec_resources pmi632_typec_res = {
 	/* PD PHY not present */
 	.port_res = &pm8150b_port_res,
+	.port_probe = qcom_pmic_typec_port_probe,
+};
+
+/* Type-C in the SMB2 charger's USBIN block, PD PHY as on PM8150B */
+static const struct pmic_typec_resources pmi8998_typec_res = {
+	.pdphy_res = &pm8150b_pdphy_res,
+	.port_probe = qcom_pmic_typec_port_smb2_probe,
 };
 
 static const struct of_device_id qcom_pmic_typec_table[] = {
 	{ .compatible = "qcom,pm8150b-typec", .data = &pm8150b_typec_res },
 	{ .compatible = "qcom,pmi632-typec", .data = &pmi632_typec_res },
+	{ .compatible = "qcom,pmi8998-typec", .data = &pmi8998_typec_res },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, qcom_pmic_typec_table);

@@ -26,6 +26,12 @@ struct pmic_typec_port_resources {
 
 extern const struct pmic_typec_port_resources pm8150b_port_res;
 
+int qcom_pmic_typec_port_smb2_probe(struct platform_device *pdev,
+				    struct pmic_typec *tcpm,
+				    const struct pmic_typec_port_resources *res,
+				    struct regmap *regmap,
+				    u32 base);
+
 int qcom_pmic_typec_port_probe(struct platform_device *pdev,
 			       struct pmic_typec *tcpm,
 			       const struct pmic_typec_port_resources *res,
