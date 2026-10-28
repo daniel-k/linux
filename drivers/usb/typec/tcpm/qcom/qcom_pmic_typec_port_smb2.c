@@ -356,7 +356,6 @@ static int qcom_pmic_typec_smb2_start(struct pmic_typec *tcpm,
 				      struct tcpm_port *tcpm_port)
 {
 	struct pmic_typec_smb2 *port = tcpm->pmic_typec_smb2;
-	unsigned int stat4;
 	int ret;
 
 	/* VCONN under software control, off */
@@ -370,23 +369,6 @@ static int qcom_pmic_typec_smb2_start(struct pmic_typec *tcpm,
 	ret = regmap_write(port->regmap, port->base + TYPE_C_INTRPT_ENB_REG, 0xff);
 	if (ret)
 		return ret;
-
-	/*
-	 * A source sends its capabilities only for a few seconds after attach,
-	 * usually long before this driver starts. Detach for a second so that
-	 * an attached partner starts over and offers PD again.
-	 */
-	ret = smb2_read(port, TYPE_C_STATUS_4_REG, &stat4);
-	if (ret)
-		return ret;
-	if (stat4 & CC_ATTACHED) {
-		ret = regmap_update_bits(port->regmap,
-					 port->base + TYPE_C_INTRPT_ENB_SOFTWARE_CTRL_REG,
-					 TYPEC_POWER_ROLE_CMD_MASK, TYPEC_DISABLE_CMD);
-		if (ret)
-			return ret;
-		msleep(1000);
-	}
 
 	port->tcpm_port = tcpm_port;
 	enable_irq(port->irq);
