@@ -404,10 +404,9 @@ static int ctrl_cmd_bye(struct sockaddr_qrtr *from)
 		msg.msg_namelen = sizeof(sq);
 
 		ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
-		if (ret < 0 && ret != -ENODEV) {
-			pr_err("failed to send bye cmd\n");
-			goto delete_node;
-		}
+		if (ret < 0 && ret != -ENODEV)
+			pr_err_ratelimited("failed to send bye cmd to %u:%u: %d\n",
+					   srv->node, srv->port, ret);
 	}
 
 	/* Ignore -ENODEV */
@@ -488,10 +487,9 @@ static int ctrl_cmd_del_client(struct sockaddr_qrtr *from,
 		msg.msg_namelen = sizeof(sq);
 
 		ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
-		if (ret < 0 && ret != -ENODEV) {
-			pr_err("failed to send del client cmd\n");
-			return ret;
-		}
+		if (ret < 0 && ret != -ENODEV)
+			pr_err_ratelimited("failed to send del client cmd to %u:%u: %d\n",
+					   srv->node, srv->port, ret);
 	}
 	return 0;
 }
