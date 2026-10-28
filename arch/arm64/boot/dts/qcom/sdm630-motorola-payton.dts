@@ -14,6 +14,7 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/usb/pd.h>
 
 /* The SoC default at 0xfed00000 lies past the end of payton's 3 GiB of RAM. */
 /delete-node/ &zap_shader_region;
@@ -252,15 +253,49 @@
 &pm660_charger {
 	monitored-battery = <&battery>;
 
-	/* type-c-change (usb-chgpth irq 7): host role and VBUS out for sinks */
-	interrupts = <0x0 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
-		     <0x0 0x12 0x2 IRQ_TYPE_EDGE_BOTH>,
-		     <0x0 0x16 0x1 IRQ_TYPE_EDGE_RISING>,
-		     <0x0 0x13 0x6 IRQ_TYPE_EDGE_RISING>,
-		     <0x0 0x13 0x7 IRQ_TYPE_EDGE_RISING>;
-	interrupt-names = "usb-plugin", "bat-ov", "wdog-bark", "usbin-icl-change",
-			  "type-c-change";
-	usb-role-switch = <&usb3_dwc3>;
+	status = "okay";
+};
+
+&pm660_typec {
+	vdd-vbus-supply = <&pm660_vbus>;
+	vdd-pdphy-supply = <&vreg_l7b_3p125>;
+
+	status = "okay";
+
+	connector {
+		compatible = "usb-c-connector";
+
+		power-role = "dual";
+		data-role = "dual";
+		try-power-role = "sink";
+		self-powered;
+
+		source-pdos = <PDO_FIXED(5000, 1500, PDO_FIXED_DUAL_ROLE |
+						     PDO_FIXED_USB_COMM |
+						     PDO_FIXED_DATA_SWAP)>;
+		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+						   PDO_FIXED_USB_COMM |
+						   PDO_FIXED_DATA_SWAP)>;
+		op-sink-microwatt = <10000000>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				pm660_typec_hs_in: endpoint {
+					remote-endpoint = <&usb3_dwc3_hs_out>;
+				};
+			};
+		};
+	};
+};
+
+&pm660_vbus {
+	regulator-min-microamp = <500000>;
+	regulator-max-microamp = <1500000>;
 
 	status = "okay";
 };
@@ -537,9 +572,13 @@
 			regulator-ramp-delay = <0>;
 		};
 
+		/*
+		 * QUSB2 D+/D- (3.075 V and up downstream) and the PD PHY
+		 * (2.8 V and up). Neither driver sets a voltage.
+		 */
 		vreg_l7b_3p125: l7 {
-			regulator-min-microvolt = <2700000>;
-			regulator-max-microvolt = <3125000>;
+			regulator-min-microvolt = <3088000>;
+			regulator-max-microvolt = <3088000>;
 			regulator-enable-ramp-delay = <250>;
 		};
 
@@ -637,10 +676,16 @@
 	phys = <&qusb2phy0>;
 	phy-names = "usb2-phy";
 
-	/* Type-C is part of the PM660 charger, which switches the role */
+	/* Data role from the Type-C port manager */
 	dr_mode = "otg";
 	usb-role-switch;
 	role-switch-default-mode = "peripheral";
+
+	port {
+		usb3_dwc3_hs_out: endpoint {
+			remote-endpoint = <&pm660_typec_hs_in>;
+		};
+	};
 };
 
 &wifi {
