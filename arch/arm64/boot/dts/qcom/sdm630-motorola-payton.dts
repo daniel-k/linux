@@ -252,6 +252,16 @@
 &pm660_charger {
 	monitored-battery = <&battery>;
 
+	/* type-c-change (usb-chgpth irq 7): host role and VBUS out for sinks */
+	interrupts = <0x0 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
+		     <0x0 0x12 0x2 IRQ_TYPE_EDGE_BOTH>,
+		     <0x0 0x16 0x1 IRQ_TYPE_EDGE_RISING>,
+		     <0x0 0x13 0x6 IRQ_TYPE_EDGE_RISING>,
+		     <0x0 0x13 0x7 IRQ_TYPE_EDGE_RISING>;
+	interrupt-names = "usb-plugin", "bat-ov", "wdog-bark", "usbin-icl-change",
+			  "type-c-change";
+	usb-role-switch = <&usb3_dwc3>;
+
 	status = "okay";
 };
 
@@ -627,7 +637,10 @@
 	phys = <&qusb2phy0>;
 	phy-names = "usb2-phy";
 
-	dr_mode = "peripheral";
+	/* Type-C is part of the PM660 charger, which switches the role */
+	dr_mode = "otg";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
 };
 
 &wifi {
