@@ -114,6 +114,7 @@ struct qmi_elem_info sns_reg_group_resp_ei[] = {
 	{ 1000, 0x0a00, 0x003 },
 	{ 1001, 0x0b00, 0x003 },
 	{ 1010, 0x0c00, 0x003 },
+	{ 1011, 0x6900, 0x003 },
 	{ 1020, 0x0d00, 0x003 },
 	{ 1030, 0x4100, 0x018 },
 	{ 1040, 0x0100, 0x080 },
@@ -152,6 +153,7 @@ struct qmi_elem_info sns_reg_group_resp_ei[] = {
 	{ 2699, 0x2d00, 0x100 },
 	{ 2700, 0x1d00, 0x0e0 },
 	{ 2701, 0x1e00, 0x0e0 },
+	{ 2710, 0x6a00, 0x100 },
 	{ 2800, 0x1f00, 0x022 },
 	{ 2900, 0x2000, 0x004 },
 	{ 2910, 0x2100, 0x004 },
@@ -203,16 +205,35 @@ struct qmi_elem_info sns_reg_group_resp_ei[] = {
 	{ 3327, 0x5d00, 0x00e },
 	{ 3328, 0x5e00, 0x00e },
 	{ 3329, 0x5f00, 0x00e },
+	{ 3330, 0x6200, 0x0e9 },
+	{ 3331, 0x6300, 0x07c },
 	{ 3400, 0x6100, 0x01c },
+	/* Motorola */
+	{ 10000, 0x6400, 0x018 },
+	{ 10001, 0x6500, 0x004 },
+	{ 10002, 0x6600, 0x002 },
+	{ 10003, 0x6700, 0x008 },
+	{ 10004, 0x6800, 0x01e },
+	{ 10007, 0x6b00, 0x022 },
 	{ /* sentinel */}
 };
 
-static const struct group_map_entry *group_map_entry_by_id(short gid)
+/* Group sizes of the SDM630 sensors daemon that differ from group_map. */
+static const struct group_map_entry group_map_sdm630[] = {
+	{ 20, 0x3000, 0x07e },
+	{ 1000, 0x0a00, 0x00f },
+	{ 1001, 0x0b00, 0x00f },
+	{ 2980, 0x2a00, 0x07e },
+	{ /* sentinel */}
+};
+
+static const struct group_map_entry *group_map_entry_by_id(const struct group_map_entry *map,
+							   unsigned short gid)
 {
 	const struct group_map_entry *entry;
 	int index = 0;
 
-	while ((entry = &group_map[index++])->size)
+	while ((entry = &map[index++])->size)
 		if (entry->group_id == gid)
 			return entry;
 	return NULL;
@@ -226,10 +247,16 @@ enum sns_reg_target_rproc {
 
 struct sns_reg_of_match_data {
 	enum sns_reg_target_rproc target_rproc;
+	/* Entries that take precedence over group_map */
+	const struct group_map_entry *group_map;
 };
 
 static const struct sns_reg_of_match_data sns_reg_target_adsp = { .target_rproc = RPROC_ADSP };
 static const struct sns_reg_of_match_data sns_reg_target_slpi = { .target_rproc = RPROC_SLPI };
+static const struct sns_reg_of_match_data sns_reg_target_sdm630 = {
+	.target_rproc = RPROC_ADSP,
+	.group_map = group_map_sdm630,
+};
 
 static const struct of_device_id sns_reg_supported_socs[] __maybe_unused = {
 	{ .compatible = "qcom,apq8096", .data = &sns_reg_target_slpi, },
@@ -246,24 +273,19 @@ static const struct of_device_id sns_reg_supported_socs[] __maybe_unused = {
 	{ .compatible = "qcom,sdm429", .data = &sns_reg_target_adsp, },
 	{ .compatible = "qcom,sdm439", .data = &sns_reg_target_adsp, },
 	{ .compatible = "qcom,sdm450", .data = &sns_reg_target_adsp, },
-	{ .compatible = "qcom,sdm630", .data = &sns_reg_target_adsp, },
+	{ .compatible = "qcom,sdm630", .data = &sns_reg_target_sdm630, },
 	{ .compatible = "qcom,sdm632", .data = &sns_reg_target_adsp, },
 	{ .compatible = "qcom,sdm636", .data = &sns_reg_target_adsp, },
 	{ .compatible = "qcom,sdm660", .data = &sns_reg_target_adsp, },
 	{}
 };
 
-static enum sns_reg_target_rproc get_target_rproc(void)
+static const struct sns_reg_of_match_data *get_match_data(void)
 {
 	const struct of_device_id *match;
-	const struct sns_reg_of_match_data *mdata;
 
 	match = of_match_node(sns_reg_supported_socs, of_root);
-	if (!match)
-		return NOT_SUPPORTED;
-
-	mdata = match->data;
-	return mdata->target_rproc;
+	return match ? match->data : NULL;
 }
 
 struct qcom_sns_reg_data {
@@ -281,6 +303,7 @@ struct qcom_sns_reg_data {
 	const struct firmware *fw;
 
 	enum sns_reg_target_rproc target_rproc;
+	const struct group_map_entry *group_map;
 	struct notifier_block ssr_nb;
 	void *ssr_cookie;
 
@@ -321,7 +344,11 @@ static void qcom_sns_reg_get_group_req_handler(
 	const struct group_map_entry *group;
 	int ret;
 
-	group = group_map_entry_by_id(req->id);
+	group = NULL;
+	if (__qcom_sns_reg_data->group_map)
+		group = group_map_entry_by_id(__qcom_sns_reg_data->group_map, req->id);
+	if (!group)
+		group = group_map_entry_by_id(group_map, req->id);
 
 	rsp = kzalloc(sizeof(*rsp), GFP_KERNEL);
 	if (!rsp)
@@ -344,7 +371,7 @@ static void qcom_sns_reg_get_group_req_handler(
 		/* bounds check */
 		if (!__qcom_sns_reg_data->fw
 			|| group->offset >= __qcom_sns_reg_data->fw->size
-			|| (group->offset + group->size) >= __qcom_sns_reg_data->fw->size)
+			|| (group->offset + group->size) > __qcom_sns_reg_data->fw->size)
 		{
 			sns_reg_err("no firmware or it is buggy!\n");
 		} else {
@@ -491,6 +518,7 @@ static int qcom_sns_reg_probe_once(struct auxiliary_device *auxdev)
 	void *cookie;
 	int ret;
 	const char *target_ssr_name;
+	const struct sns_reg_of_match_data *mdata;
 
 	__qcom_sns_reg_data->first_auxdev = auxdev;
 
@@ -498,7 +526,9 @@ static int qcom_sns_reg_probe_once(struct auxiliary_device *auxdev)
 	 * Determine if current SoC supports Sensor Manager (SMGR) at all.
 	 * And if supports, on which remote processor it should be running.
 	 */
-	__qcom_sns_reg_data->target_rproc = get_target_rproc();
+	mdata = get_match_data();
+	__qcom_sns_reg_data->target_rproc = mdata ? mdata->target_rproc : NOT_SUPPORTED;
+	__qcom_sns_reg_data->group_map = mdata ? mdata->group_map : NULL;
 	switch (__qcom_sns_reg_data->target_rproc)
 	{
 	case RPROC_ADSP:
