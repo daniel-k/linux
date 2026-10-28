@@ -105,6 +105,11 @@
 #define CMD_OTG						0x140
 #define OTG_EN_BIT					BIT(0)
 
+#define OTG_CURRENT_LIMIT_CFG				0x152
+#define OTG_CURRENT_LIMIT_MASK				GENMASK(2, 0)
+/* 250 mA + 250 mA per step: 1.5 A, the vendor driver's default */
+#define OTG_CURRENT_LIMIT_1500MA			5
+
 #define OTG_CFG						0x153
 #define OTG_RESERVED_MASK				GENMASK(7, 6)
 #define DIS_OTG_ON_TLIM_BIT				BIT(5)
@@ -950,6 +955,13 @@ static const struct smb_init_register smb_init_seq[] = {
 	  .val = 0 },
 	/* Configure VBUS for software control */
 	{ .addr = OTG_CFG, .mask = OTG_EN_SRC_CFG_BIT, .val = 0 },
+	/*
+	 * VBUS current limit for a sink on the Type-C port. The reset value,
+	 * 250 mA, is too little for a bus-powered hub: it never enumerates.
+	 */
+	{ .addr = OTG_CURRENT_LIMIT_CFG,
+	  .mask = OTG_CURRENT_LIMIT_MASK,
+	  .val = OTG_CURRENT_LIMIT_1500MA },
 	/*
 	 * Use VBAT to determine the recharge threshold when battery is full
 	 * rather than the state of charge.
