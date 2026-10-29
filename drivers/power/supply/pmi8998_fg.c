@@ -1219,6 +1219,18 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/* The charger restores auto charging on shutdown; keep the limit off it */
+static void pmi8998_fg_shutdown(struct platform_device *pdev)
+{
+	struct pmi8998_fg_chip *chip = platform_get_drvdata(pdev);
+
+	if (!chip)
+		return;
+
+	disable_work_sync(&chip->charge_limit_work);
+	disable_work_sync(&chip->cycle_work);
+}
+
 static const struct of_device_id fg_match_id_table[] = {
 	{ .compatible = "qcom,pmi8998-fg" },
 	{ /* sentinel */ }
@@ -1227,6 +1239,7 @@ MODULE_DEVICE_TABLE(of, fg_match_id_table);
 
 static struct platform_driver pmi8998_fg_driver = {
 	.probe = pmi8998_fg_probe,
+	.shutdown = pmi8998_fg_shutdown,
 	.driver = {
 		.name = "pmi8998-fg",
 		.of_match_table = fg_match_id_table,

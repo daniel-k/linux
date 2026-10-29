@@ -406,6 +406,7 @@ struct smb_chip {
 	struct delayed_work status_change_work;
 	int cable_irq;
 	bool wakeup_enabled;
+	bool shut_down;
 
 	struct iio_channel *usb_in_i_chan;
 	struct iio_channel *usb_in_v_chan;
@@ -705,6 +706,9 @@ static int smb_set_charge_behaviour(struct smb_chip *chip, int val)
 {
 	bool suspend, enable;
 	int rc;
+
+	if (READ_ONCE(chip->shut_down))
+		return -ESHUTDOWN;
 
 	switch (val) {
 	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
@@ -1255,6 +1259,31 @@ static int smb_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * Charge behaviours are a policy of the running system (the charge limit),
+ * the registers outlast it: hand the next owner, the bootloader's off-mode
+ * charging or another OS, a charger that charges.
+ */
+static void smb_shutdown(struct platform_device *pdev)
+{
+	struct smb_chip *chip = platform_get_drvdata(pdev);
+	int behaviour;
+
+	if (!chip)
+		return;
+
+	WRITE_ONCE(chip->shut_down, true);
+	if (smb_get_charge_behaviour(chip, &behaviour) ||
+	    behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO)
+		return;
+
+	dev_info(chip->dev, "restoring auto charging for shutdown\n");
+	regmap_update_bits(chip->regmap, chip->base + CHARGING_ENABLE_CMD,
+			   CHARGING_ENABLE_CMD_BIT, CHARGING_ENABLE_CMD_BIT);
+	regmap_update_bits(chip->regmap, chip->base + USBIN_CMD_IL,
+			   USBIN_SUSPEND_BIT, 0);
+}
+
 static const struct of_device_id smb_match_id_table[] = {
 	{ .compatible = "qcom,pmi8998-charger", .data = "pmi8998" },
 	{ .compatible = "qcom,pm660-charger", .data = "pm660" },
@@ -1264,6 +1293,7 @@ MODULE_DEVICE_TABLE(of, smb_match_id_table);
 
 static struct platform_driver qcom_spmi_smb = {
 	.probe = smb_probe,
+	.shutdown = smb_shutdown,
 	.driver = {
 		.name = "qcom-smbx-charger",
 		.of_match_table = smb_match_id_table,
