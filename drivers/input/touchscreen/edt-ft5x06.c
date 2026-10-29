@@ -127,6 +127,7 @@ struct edt_ft5x06_ts_data {
 	struct mutex mutex;
 	bool factory_mode;
 	enum edt_pmode suspend_mode;
+	bool panel_powered;
 	int threshold;
 	int gain;
 	int offset;
@@ -150,6 +151,8 @@ struct edt_ft5x06_ts_data {
 
 struct edt_i2c_chip_data {
 	int  max_support_points;
+	/* Touch part of a TDDI: unpowered whenever the panel is off */
+	bool panel_powered;
 };
 
 static const struct regmap_config edt_ft5x06_i2c_regmap_config = {
@@ -1180,6 +1183,7 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client)
 	}
 
 	tsdata->max_support_points = chip_data->max_support_points;
+	tsdata->panel_powered = chip_data->panel_powered;
 
 	tsdata->vcc = devm_regulator_get(&client->dev, "vcc");
 	if (IS_ERR(tsdata->vcc))
@@ -1379,10 +1383,13 @@ static int edt_ft5x06_ts_suspend(struct device *dev)
 	if (tsdata->suspend_mode == EDT_PMODE_NOT_SUPPORTED)
 		return 0;
 
-	/* Enter hibernate mode. */
+	/*
+	 * Enter hibernate mode. A panel-powered controller usually is off
+	 * already, as the display blanks before system suspend.
+	 */
 	ret = regmap_write(tsdata->regmap, PMOD_REGISTER_OPMODE,
 			   PMOD_REGISTER_HIBERNATE);
-	if (ret)
+	if (ret && !tsdata->panel_powered)
 		dev_warn(dev, "Failed to set hibernate mode\n");
 
 	if (tsdata->suspend_mode == EDT_PMODE_HIBERNATE)
@@ -1500,6 +1507,7 @@ static const struct edt_i2c_chip_data edt_ft8201_data = {
 
 static const struct edt_i2c_chip_data edt_ft8716_data = {
 	.max_support_points = 10,
+	.panel_powered = true,
 };
 
 static const struct edt_i2c_chip_data edt_ft8719_data = {
