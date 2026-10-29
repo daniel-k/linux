@@ -2014,9 +2014,14 @@ static struct clk_branch csiphy_ahb2crif_clk = {
 	},
 };
 
+/*
+ * Something besides Linux holds this clock: after Linux drops its vote on
+ * suspend, the CBCR keeps reporting it running. Check the halt bit only when
+ * enabling, as for voted clocks.
+ */
 static struct clk_branch mdss_ahb_clk = {
 	.halt_reg = 0x2308,
-	.halt_check = BRANCH_HALT,
+	.halt_check = BRANCH_HALT_VOTED,
 	.hwcg_reg = 0x2308,
 	.hwcg_bit = 1,
 	.clkr = {
