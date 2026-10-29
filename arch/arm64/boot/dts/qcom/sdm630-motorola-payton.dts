@@ -316,6 +316,14 @@
 	status = "okay";
 };
 
+/*
+ * Resets the phone from the PMIC when userspace stops petting it, also when
+ * the CPUs or TrustZone hang and the APSS watchdog and PSCI reset can't.
+ */
+&pm660_pon_wdt {
+	status = "okay";
+};
+
 &pm660_rradc {
 	status = "okay";
 };

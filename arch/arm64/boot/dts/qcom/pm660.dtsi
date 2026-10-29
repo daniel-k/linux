@@ -72,6 +72,14 @@
 
 				status = "disabled";
 			};
+
+			pm660_pon_wdt: watchdog {
+				compatible = "qcom,pm8916-wdt";
+				interrupts = <0x0 0x8 6 IRQ_TYPE_EDGE_RISING>;
+				timeout-sec = <60>;
+
+				status = "disabled";
+			};
 		};
 
 		pm660_charger: charger@1000 {
