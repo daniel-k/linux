@@ -39,6 +39,7 @@
 #define MEM_INTF_IMA_HW_STS		0x456
 #define MEM_INTF_BEAT_COUNT		0x457
 #define MEM_INTF_IMA_ERR_STS		0x45f
+#define MEM_INTF_IMA_BYTE_EN		0x460
 #define MEM_INTF_ADDR_LSB		0x461
 #define MEM_INTF_RD_DATA0		0x467
 #define MEM_INTF_WR_DATA0		0x463
@@ -48,15 +49,25 @@
 #define MEM_ACCESS_REQ			BIT(7)
 #define IACS_SLCT			BIT(5)
 #define IMA_CTL_MASK			GENMASK(7, 6)
+#define IMA_WR_EN			BIT(6)
 #define IACS_RDY			BIT(1)
 #define BEAT_COUNT_MASK			GENMASK(3, 0)
 
 /* SRAM words */
 #define SRAM_NOM_CAP_WORD		58
 #define SRAM_ACT_BATT_CAP_WORD		74
+#define SRAM_CYCLE_COUNT_WORD		75
+#define SRAM_BATT_SOC_WORD		91
 #define SRAM_CC_SOC_WORD		95
 #define SRAM_WORD_BYTES			4
 #define SRAM_READ_TRIES			3
+
+/*
+ * Charge cycles, counted as stock does: one 16-bit counter per eighth of
+ * the battery SOC range, two per SRAM word from SRAM_CYCLE_COUNT_WORD on,
+ * each bumped when a charge rises more than 2/256 within its range.
+ */
+#define CYCLE_BUCKETS			8
 
 /* CC_SOC is a signed fraction of the nominal capacity */
 #define CC_SOC_FULL			GENMASK(29, 0)
@@ -79,6 +90,10 @@ struct pmi8998_fg_chip {
 	struct mutex sram_lock;
 	int nom_cap_uah;
 	int act_cap_uah;
+	u16 cycles[CYCLE_BUCKETS];
+	bool cycle_started[CYCLE_BUCKETS];
+	u8 cycle_start_soc[CYCLE_BUCKETS];
+	struct work_struct cycle_work;
 
 	/* charge limit: stop at charge_end %, resume at charge_start % */
 	int charge_start;
@@ -425,8 +440,50 @@ static int pmi8998_fg_sram_read_once(struct pmi8998_fg_chip *chip, u16 word,
 	return 0;
 }
 
-static int pmi8998_fg_sram_read(struct pmi8998_fg_chip *chip, u16 word,
-				u8 offset, u8 *val, int len)
+/* One IMA write in single mode, within one SRAM word */
+static int pmi8998_fg_sram_write_once(struct pmi8998_fg_chip *chip, u16 word,
+				      u8 offset, const u8 *val, int len)
+{
+	u8 byte_en = GENMASK(offset + len - 1, offset), dummy = 0;
+	int ret;
+
+	ret = pmi8998_fg_masked_write(chip, MEM_INTF_IMA_CTL, IMA_CTL_MASK,
+				      IMA_WR_EN);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_iacs_ready(chip);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_set_sram_addr(chip, word);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_write(chip, &byte_en, MEM_INTF_IMA_BYTE_EN, 1);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_write(chip, (u8 *)val, MEM_INTF_WR_DATA0 + offset, len);
+	if (ret)
+		return ret;
+
+	/* Writing WR_DATA3 starts the transaction; byte_en masks it out */
+	if (!(byte_en & BIT(3))) {
+		ret = pmi8998_fg_write(chip, &dummy, MEM_INTF_WR_DATA0 + 3, 1);
+		if (ret)
+			return ret;
+	}
+
+	ret = pmi8998_fg_clear_ima(chip, false);
+	if (ret)
+		return ret;
+
+	return pmi8998_fg_iacs_ready(chip);
+}
+
+static int pmi8998_fg_sram_xfer(struct pmi8998_fg_chip *chip, u16 word,
+				u8 offset, u8 *val, int len, bool write)
 {
 	int tries, polls, ret, rel;
 	u8 cfg;
@@ -451,7 +508,10 @@ static int pmi8998_fg_sram_read(struct pmi8998_fg_chip *chip, u16 word,
 			ret = pmi8998_fg_masked_write(chip, MEM_INTF_CFG,
 						      MEM_ACCESS_REQ | IACS_SLCT,
 						      MEM_ACCESS_REQ | IACS_SLCT);
-		if (!ret)
+		if (!ret && write)
+			ret = pmi8998_fg_sram_write_once(chip, word, offset,
+							 val, len);
+		else if (!ret)
 			ret = pmi8998_fg_sram_read_once(chip, word, offset,
 							val, len);
 
@@ -466,9 +526,25 @@ static int pmi8998_fg_sram_read(struct pmi8998_fg_chip *chip, u16 word,
 	mutex_unlock(&chip->sram_lock);
 
 	if (ret)
-		dev_err(chip->dev, "Failed to read SRAM word %u: %d\n", word, ret);
+		dev_err(chip->dev, "Failed to %s SRAM word %u: %d\n",
+			write ? "write" : "read", word, ret);
 
 	return ret;
+}
+
+static int pmi8998_fg_sram_read(struct pmi8998_fg_chip *chip, u16 word,
+				u8 offset, u8 *val, int len)
+{
+	return pmi8998_fg_sram_xfer(chip, word, offset, val, len, false);
+}
+
+static int pmi8998_fg_sram_write(struct pmi8998_fg_chip *chip, u16 word,
+				 u8 offset, u8 *val, int len)
+{
+	if (offset + len > SRAM_WORD_BYTES)
+		return -EINVAL;
+
+	return pmi8998_fg_sram_xfer(chip, word, offset, val, len, true);
 }
 
 static int pmi8998_fg_read_capacities(struct pmi8998_fg_chip *chip)
@@ -500,6 +576,104 @@ static int pmi8998_fg_read_capacities(struct pmi8998_fg_chip *chip)
  * @param val Pointer to store value at
  * @return int 0 on success, negative errno on error
  */
+static int pmi8998_fg_read_cycles(struct pmi8998_fg_chip *chip)
+{
+	u8 buf[CYCLE_BUCKETS * 2];
+	int i, ret;
+
+	ret = pmi8998_fg_sram_read(chip, SRAM_CYCLE_COUNT_WORD, 0, buf,
+				   sizeof(buf));
+	if (ret)
+		return ret;
+
+	for (i = 0; i < CYCLE_BUCKETS; i++)
+		chip->cycles[i] = get_unaligned_le16(&buf[i * 2]);
+
+	return 0;
+}
+
+static int pmi8998_fg_store_cycle(struct pmi8998_fg_chip *chip, int bucket)
+{
+	u16 word = SRAM_CYCLE_COUNT_WORD + bucket / 2;
+	u8 offset = (bucket % 2) * 2, buf[2];
+	int ret;
+
+	put_unaligned_le16(chip->cycles[bucket] + 1, buf);
+	ret = pmi8998_fg_sram_write(chip, word, offset, buf, 2);
+	if (ret)
+		return ret;
+
+	ret = pmi8998_fg_sram_read(chip, word, offset, buf, 2);
+	if (ret)
+		return ret;
+	if (get_unaligned_le16(buf) != chip->cycles[bucket] + 1)
+		return -EIO;
+
+	chip->cycles[bucket]++;
+
+	return 0;
+}
+
+/*
+ * A bucket starts when charging reaches it and counts once charging stops
+ * (full, unplugged or held by the charge limit) more than 2/256 above
+ * where it started.
+ */
+static void pmi8998_fg_cycle_worker(struct work_struct *work)
+{
+	struct pmi8998_fg_chip *chip = container_of(work, struct pmi8998_fg_chip,
+						    cycle_work);
+	union power_supply_propval status, behaviour;
+	int bucket, i, ret;
+	bool charging;
+	u8 buf[4], soc;
+
+	if (!chip->chg_psy ||
+	    power_supply_get_property(chip->chg_psy, POWER_SUPPLY_PROP_STATUS,
+				      &status))
+		return;
+
+	/*
+	 * The status follows a charge limit stop only seconds later, without
+	 * a notification, so the behaviour the limit set decides.
+	 */
+	charging = status.intval == POWER_SUPPLY_STATUS_CHARGING;
+	if (!power_supply_get_property(chip->chg_psy,
+				       POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+				       &behaviour) &&
+	    behaviour.intval != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO)
+		charging = false;
+
+	if (pmi8998_fg_sram_read(chip, SRAM_BATT_SOC_WORD, 0, buf, 4))
+		return;
+	soc = buf[3];
+	bucket = soc / (256 / CYCLE_BUCKETS);
+	dev_dbg(chip->dev, "cycles: soc %u bucket %d charging %d\n", soc,
+		bucket, charging);
+
+	if (charging) {
+		if (!chip->cycle_started[bucket]) {
+			chip->cycle_started[bucket] = true;
+			chip->cycle_start_soc[bucket] = soc;
+		}
+		return;
+	}
+
+	for (i = 0; i < CYCLE_BUCKETS; i++) {
+		if (!chip->cycle_started[i])
+			continue;
+		if (soc > chip->cycle_start_soc[i] + 2) {
+			ret = pmi8998_fg_store_cycle(chip, i);
+			dev_dbg(chip->dev, "cycles: bucket %d from soc %u: %d\n",
+				i, chip->cycle_start_soc[i], ret);
+			if (ret)
+				dev_err(chip->dev, "Failed to store cycle %d: %d\n",
+					i, ret);
+		}
+		chip->cycle_started[i] = false;
+	}
+}
+
 static int pmi8998_fg_get_charge_counter(struct pmi8998_fg_chip *chip, int *val)
 {
 	u8 buf[4];
@@ -536,6 +710,7 @@ static enum power_supply_property pmi8998_fg_props[] = {
 	POWER_SUPPLY_PROP_TEMP_ALERT_MAX,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
 	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 };
@@ -623,6 +798,12 @@ static int pmi8998_fg_get_property(struct power_supply *psy,
 		if (!chip->act_cap_uah && !chip->nom_cap_uah)
 			return -ENODATA;
 		val->intval = chip->act_cap_uah ?: chip->nom_cap_uah;
+		break;
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		temp = 0;
+		for (int i = 0; i < CYCLE_BUCKETS; i++)
+			temp += chip->cycles[i];
+		val->intval = DIV_ROUND_CLOSEST(temp, CYCLE_BUCKETS);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
 		val->intval = chip->charge_start;
@@ -815,6 +996,7 @@ static void pmi8998_fg_charge_limit_worker(struct work_struct *work)
 	val.intval = behaviour;
 	power_supply_set_property(chip->chg_psy,
 				  POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &val);
+	schedule_work(&chip->cycle_work);
 }
 
 static irqreturn_t pmi8998_fg_handle_soc_delta(int irq, void *data)
@@ -822,6 +1004,7 @@ static irqreturn_t pmi8998_fg_handle_soc_delta(int irq, void *data)
 	struct pmi8998_fg_chip *chip = data;
 
 	schedule_work(&chip->charge_limit_work);
+	schedule_work(&chip->cycle_work);
 
 	/* Signal change in state of charge */
 	power_supply_changed(chip->batt_psy);
@@ -852,6 +1035,7 @@ static int pmi8998_fg_notifier_call(struct notifier_block *nb, unsigned long val
 
 		power_supply_changed(chip->batt_psy);
 		schedule_work(&chip->charge_limit_work);
+		schedule_work(&chip->cycle_work);
 
 		if (chip->status == POWER_SUPPLY_STATUS_UNKNOWN) {
 			/*
@@ -901,6 +1085,10 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 	chip->charge_end = 100;
 	ret = devm_work_autocancel(chip->dev, &chip->charge_limit_work,
 				   pmi8998_fg_charge_limit_worker);
+	if (ret)
+		return ret;
+	ret = devm_work_autocancel(chip->dev, &chip->cycle_work,
+				   pmi8998_fg_cycle_worker);
 	if (ret)
 		return ret;
 
@@ -958,6 +1146,13 @@ static int pmi8998_fg_probe(struct platform_device *pdev)
 	else
 		dev_info(chip->dev, "nominal capacity %d mAh, learned %d mAh\n",
 			 chip->nom_cap_uah / 1000, chip->act_cap_uah / 1000);
+
+	ret = pmi8998_fg_read_cycles(chip);
+	if (ret)
+		dev_warn(chip->dev, "No cycle counts from SRAM: %d\n", ret);
+	else
+		dev_info(chip->dev, "cycle counts %*ph\n",
+			 (int)sizeof(chip->cycles), chip->cycles);
 
 	supply_config.drv_data = chip;
 
