@@ -910,7 +910,7 @@ static irqreturn_t smb_handle_wdog_bark(int irq, void *data)
 
 	power_supply_changed(chip->chg_psy);
 
-	rc = regmap_write(chip->regmap, BARK_BITE_WDOG_PET,
+	rc = regmap_write(chip->regmap, chip->base + BARK_BITE_WDOG_PET,
 			  BARK_BITE_WDOG_PET_BIT);
 	if (rc < 0)
 		dev_err(chip->dev, "Couldn't pet the dog rc=%d\n", rc);
@@ -937,6 +937,14 @@ static const struct power_supply_desc smb_psy_desc = {
 
 /* Init sequence derived from vendor downstream driver */
 static const struct smb_init_register smb_init_seq[] = {
+	/*
+	 * Disable the watchdog completely, before its timeouts change. Some
+	 * bootloaders leave it armed (the Moto X4's in fastboot mode: timer
+	 * on plugin, bark and bite interrupts on), and left armed it hangs
+	 * the SoC within seconds of probe.
+	 */
+	{ .addr = WD_CFG, .mask = 0xff, .val = 0 },
+	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
 	{ .addr = AICL_RERUN_TIME_CFG, .mask = AICL_RERUN_TIME_MASK, .val = 0 },
 	/*
 	 * By default configure us as an upstream facing port
@@ -1008,12 +1016,6 @@ static const struct smb_init_register smb_init_seq[] = {
 	{ .addr = USBIN_ICL_OPTIONS,
 	  .mask = USB51_MODE_BIT | USBIN_MODE_CHG_BIT,
 	  .val = USB51_MODE_BIT },
-	/* Disable watchdog */
-	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
-	{ .addr = WD_CFG,
-	  .mask = WATCHDOG_TRIGGER_AFP_EN_BIT | WDOG_TIMER_EN_ON_PLUGIN_BIT |
-		  BARK_WDOG_INT_EN_BIT,
-	  .val = 0 },
 	/* These bits aren't documented anywhere */
 	{ .addr = USBIN_5V_AICL_THRESHOLD_CFG,
 	  .mask = USBIN_5V_AICL_THRESHOLD_CFG_MASK,
@@ -1045,6 +1047,12 @@ static const struct smb_init_register smb_init_seq[] = {
 static int smb_init_hw(struct smb_chip *chip)
 {
 	int rc, i;
+
+	/* Restart a running watchdog's count before it gets disabled */
+	rc = regmap_write(chip->regmap, chip->base + BARK_BITE_WDOG_PET,
+			  BARK_BITE_WDOG_PET_BIT);
+	if (rc < 0)
+		return dev_err_probe(chip->dev, rc, "Couldn't pet the watchdog\n");
 
 	for (i = 0; i < ARRAY_SIZE(smb_init_seq); i++) {
 		dev_dbg(chip->dev, "%d: Writing 0x%02x to 0x%02x\n", i,
