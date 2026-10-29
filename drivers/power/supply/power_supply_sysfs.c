@@ -537,10 +537,12 @@ static int add_prop_uevent(const struct device *dev, struct kobj_uevent_env *env
 	dev_attr = &pwr_attr->dev_attr;
 
 	ret = power_supply_format_property((struct device *)dev, true, dev_attr, prop_buf);
-	if (ret == -ENODEV || ret == -ENODATA || ret == -EINVAL) {
+	if (ret == -ENODEV || ret == -ENODATA || ret == -EINVAL || ret == -EAGAIN) {
 		/*
 		 * When a battery is absent, we expect -ENODEV. Don't abort;
-		 * send the uevent with at least the PRESENT=0 property
+		 * send the uevent with at least the PRESENT=0 property.
+		 * During registration (the add uevent) properties are not
+		 * readable yet and give -EAGAIN.
 		 */
 		return 0;
 	}
