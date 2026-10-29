@@ -246,11 +246,17 @@ static int __maybe_unused pm8916_wdt_suspend(struct device *dev)
 static int __maybe_unused pm8916_wdt_resume(struct device *dev)
 {
 	struct pm8916_wdt *wdt = dev_get_drvdata(dev);
+	int err;
 
-	if (watchdog_active(&wdt->wdev))
-		return pm8916_wdt_start(&wdt->wdev);
+	if (!watchdog_active(&wdt->wdev))
+		return 0;
 
-	return 0;
+	/* The timer kept counting while the reset was off */
+	err = pm8916_wdt_ping(&wdt->wdev);
+	if (err)
+		return err;
+
+	return pm8916_wdt_start(&wdt->wdev);
 }
 
 static SIMPLE_DEV_PM_OPS(pm8916_wdt_pm_ops, pm8916_wdt_suspend,
