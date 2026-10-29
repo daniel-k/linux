@@ -341,6 +341,8 @@
 #define SNARL_WDOG_TIMEOUT_MASK				GENMASK(6, 4)
 #define BARK_WDOG_TIMEOUT_MASK				GENMASK(3, 2)
 #define BITE_WDOG_TIMEOUT_MASK				GENMASK(1, 0)
+#define BARK_WDOG_TIMEOUT_64S				(2 << 2)
+#define BITE_WDOG_TIMEOUT_8S				3
 
 #define AICL_RERUN_TIME_CFG				0x661
 #define AICL_RERUN_TIME_MASK				GENMASK(1, 0)
@@ -938,13 +940,20 @@ static const struct power_supply_desc smb_psy_desc = {
 /* Init sequence derived from vendor downstream driver */
 static const struct smb_init_register smb_init_seq[] = {
 	/*
-	 * Disable the watchdog completely, before its timeouts change. Some
+	 * Stop the watchdog completely before its timeouts change. Some
 	 * bootloaders leave it armed (the Moto X4's in fastboot mode: timer
-	 * on plugin, bark and bite interrupts on), and left armed it hangs
-	 * the SoC within seconds of probe.
+	 * on plugin, bark and bite interrupts on), and reconfigured while
+	 * armed it hangs the SoC within seconds. It is enabled again at the
+	 * end of the sequence.
 	 */
 	{ .addr = WD_CFG, .mask = 0xff, .val = 0 },
-	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
+	/*
+	 * As downstream: bark after 64 s, bite 8 s later. The bark interrupt
+	 * pets it, so it bites only when the kernel stops servicing
+	 * interrupts. A bite does not disable charging.
+	 */
+	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff,
+	  .val = BARK_WDOG_TIMEOUT_64S | BITE_WDOG_TIMEOUT_8S },
 	{ .addr = AICL_RERUN_TIME_CFG, .mask = AICL_RERUN_TIME_MASK, .val = 0 },
 	/*
 	 * By default configure us as an upstream facing port
@@ -1042,6 +1051,10 @@ static const struct smb_init_register smb_init_seq[] = {
 	{ .addr = PRE_CHARGE_CURRENT_CFG,
 	  .mask = PRE_CHARGE_CURRENT_SETTING_MASK,
 	  .val = 500000 / CURRENT_SCALE_FACTOR },
+	/* Watchdog timer runs while a charger is plugged in, bark interrupt on */
+	{ .addr = WD_CFG,
+	  .mask = WDOG_TIMER_EN_ON_PLUGIN_BIT | BARK_WDOG_INT_EN_BIT,
+	  .val = WDOG_TIMER_EN_ON_PLUGIN_BIT | BARK_WDOG_INT_EN_BIT },
 };
 
 static int smb_init_hw(struct smb_chip *chip)
@@ -1068,6 +1081,11 @@ static int smb_init_hw(struct smb_chip *chip)
 	}
 
 	return 0;
+}
+
+static void smb_disable_irq_wake(void *data)
+{
+	disable_irq_wake((uintptr_t)data);
 }
 
 static int smb_init_irq(struct smb_chip *chip, int *irq, const char *name,
@@ -1183,6 +1201,15 @@ static int smb_probe(struct platform_device *pdev)
 	if (rc < 0)
 		return rc;
 	rc = smb_init_irq(chip, &irq, "wdog-bark", smb_handle_wdog_bark);
+	if (rc < 0)
+		return rc;
+
+	/* The bark must be petted in suspend too, or the dog bites */
+	rc = enable_irq_wake(irq);
+	if (rc < 0)
+		return dev_err_probe(chip->dev, rc, "Couldn't wake on wdog-bark\n");
+	rc = devm_add_action_or_reset(chip->dev, smb_disable_irq_wake,
+				      (void *)(uintptr_t)irq);
 	if (rc < 0)
 		return rc;
 
