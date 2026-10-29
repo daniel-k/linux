@@ -177,6 +177,15 @@
 	};
 };
 
+/*
+ * The LPI TLMM sits in LPASS, which the ADSP powers: with the ADSP stopped or
+ * restarting, register reads end in an external abort. Nothing uses these
+ * pins without the LPASS audio path.
+ */
+&lpi_tlmm {
+	status = "disabled";
+};
+
 &mdss {
 	status = "okay";
 };
