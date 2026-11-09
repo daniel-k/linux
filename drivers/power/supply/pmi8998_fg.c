@@ -95,9 +95,10 @@ struct pmi8998_fg_chip {
 	u8 cycle_start_soc[CYCLE_BUCKETS];
 	struct work_struct cycle_work;
 
-	/* charge limit: stop at charge_end %, resume at charge_start % */
+	/* charge limit: hold at charge_end %, charge again at charge_start % */
 	int charge_start;
 	int charge_end;
+	bool charge_discharging;
 	struct work_struct charge_limit_work;
 };
 
@@ -961,36 +962,50 @@ static int pmi8998_fg_clear_ima(struct pmi8998_fg_chip *chip, bool check_hw_sts)
 }
 
 /*
- * Run from the battery from charge_end down to charge_start, then charge
- * again; in between keep whatever the charger does, so the battery cycles
- * between the two while the phone stays plugged in. Inhibiting charging
- * with the input on is not enough: the battery still takes ~16 mA and
- * creeps up. An end threshold of 100 is no limit.
+ * Charge to charge_end, then hold there with charging inhibited: the input
+ * stays on, so the phone runs from USB and the battery rests. Inhibited, the
+ * battery still takes ~16 mA and creeps up, so above charge_end the phone
+ * runs from the battery (input suspended) until it is below charge_end, and
+ * the hold starts again. At or below charge_start (the battery fed the phone,
+ * e.g. without mains) charge normally. An end threshold of 100 is no limit.
  */
 static void pmi8998_fg_charge_limit_worker(struct work_struct *work)
 {
 	struct pmi8998_fg_chip *chip = container_of(work, struct pmi8998_fg_chip,
 						    charge_limit_work);
 	union power_supply_propval val;
-	int capacity, behaviour;
+	int capacity, behaviour, current_behaviour;
 
-	if (!chip->chg_psy || pmi8998_fg_get_capacity(chip, &capacity))
+	if (!chip->chg_psy || pmi8998_fg_get_capacity(chip, &capacity) ||
+	    power_supply_get_property(chip->chg_psy,
+				      POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &val))
 		return;
+	current_behaviour = val.intval;
 
-	if (chip->charge_end < 100 && capacity >= chip->charge_end)
-		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
-	else if (chip->charge_end == 100 || capacity <= chip->charge_start)
+	if (chip->charge_end == 100 || capacity <= chip->charge_start) {
 		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
-	else
+	} else if (capacity > chip->charge_end) {
+		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
+	} else if (current_behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		/* Someone else's input suspend (e.g. a measurement) stays */
+		if (!chip->charge_discharging || capacity == chip->charge_end)
+			return;
+		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+	} else if (capacity == chip->charge_end) {
+		behaviour = POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+	} else {
+		return;
+	}
+
+	chip->charge_discharging =
+		behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
+	if (current_behaviour == behaviour)
 		return;
 
-	if (!power_supply_get_property(chip->chg_psy,
-				       POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &val) &&
-	    val.intval == behaviour)
-		return;
-
-	dev_info(chip->dev, "%s charging at %d%% (limit %d-%d%%)\n",
-		 behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO ? "resume" : "stop",
+	dev_info(chip->dev, "%s at %d%% (limit %d-%d%%)\n",
+		 behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO ? "resume charging" :
+		 behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE ?
+		 "hold charge" : "run from battery",
 		 capacity, chip->charge_start, chip->charge_end);
 
 	val.intval = behaviour;
