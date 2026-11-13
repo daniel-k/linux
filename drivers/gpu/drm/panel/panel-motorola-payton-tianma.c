@@ -26,6 +26,8 @@ struct payton_tianma {
 	struct regulator *vddio;
 	struct regulator_bulk_data bias[2];
 	struct gpio_desc *reset_gpio;
+	/* Initialized by the bootloader and still on: the first prepare takes it as is. */
+	bool adopt;
 };
 
 static inline struct payton_tianma *to_payton_tianma(struct drm_panel *panel)
@@ -99,6 +101,12 @@ static int payton_tianma_prepare(struct drm_panel *panel)
 	struct payton_tianma *ctx = to_payton_tianma(panel);
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
+
+	/* Supplies were taken at probe; a reset and the init sequence would blank it. */
+	if (ctx->adopt) {
+		ctx->adopt = false;
+		return 0;
+	}
 
 	ret = regulator_enable(ctx->vddio);
 	if (ret < 0) {
@@ -175,6 +183,16 @@ static const struct drm_panel_funcs payton_tianma_panel_funcs = {
 	.get_modes = payton_tianma_get_modes,
 };
 
+/* Drops the supplies taken for a panel that was adopted but never prepared. */
+static void payton_tianma_release(struct payton_tianma *ctx)
+{
+	if (!ctx->adopt)
+		return;
+	ctx->adopt = false;
+	regulator_bulk_disable(ARRAY_SIZE(ctx->bias), ctx->bias);
+	regulator_disable(ctx->vddio);
+}
+
 static int payton_tianma_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
@@ -198,10 +216,35 @@ static int payton_tianma_probe(struct mipi_dsi_device *dsi)
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to get bias regulators\n");
 
-	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_ASIS);
 	if (IS_ERR(ctx->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
 				     "Failed to get reset-gpios\n");
+
+	/*
+	 * The bootloader leaves the panel initialized (reset released, bias on) and
+	 * showing its picture. Keep it running for the first prepare: a reset here
+	 * blanks the screen until the init sequence and its sleep-out are done.
+	 */
+	if (gpiod_get_value_cansleep(ctx->reset_gpio) == 0 &&
+	    regulator_is_enabled(ctx->bias[0].consumer) > 0) {
+		ret = regulator_enable(ctx->vddio);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "Failed to enable vddio\n");
+		ret = regulator_bulk_enable(ARRAY_SIZE(ctx->bias), ctx->bias);
+		if (ret < 0) {
+			regulator_disable(ctx->vddio);
+			return dev_err_probe(dev, ret, "Failed to enable bias supplies\n");
+		}
+		ctx->adopt = true;
+		ret = gpiod_direction_output(ctx->reset_gpio, 0);
+	} else {
+		ret = gpiod_direction_output(ctx->reset_gpio, 1);
+	}
+	if (ret < 0) {
+		payton_tianma_release(ctx);
+		return dev_err_probe(dev, ret, "Failed to drive reset-gpios\n");
+	}
 
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
@@ -222,6 +265,7 @@ static int payton_tianma_probe(struct mipi_dsi_device *dsi)
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
 		drm_panel_remove(&ctx->panel);
+		payton_tianma_release(ctx);
 		return dev_err_probe(dev, ret, "Failed to attach to DSI host\n");
 	}
 
@@ -238,6 +282,7 @@ static void payton_tianma_remove(struct mipi_dsi_device *dsi)
 		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
 
 	drm_panel_remove(&ctx->panel);
+	payton_tianma_release(ctx);
 }
 
 static const struct of_device_id payton_tianma_of_match[] = {
